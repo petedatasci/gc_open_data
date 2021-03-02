@@ -19,10 +19,15 @@ library(reshape2)
 library(stringr)
 install.packages("usethis")
 library(usethis)
+library(gitcreds)
 
 ```
 
 ```{r}
+
+gitcreds_set()
+
+use_git(message = "Initial commit")
 
 use_github()
 ```
