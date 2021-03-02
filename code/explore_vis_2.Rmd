@@ -1,0 +1,139 @@
+---
+title: "explore_2"
+author: "Peter Bonner"
+date: "25/02/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+library(tidyverse)
+library(readr)
+library(janitor)
+library(reshape)
+library(readxl)
+library(reshape2)
+library(stringr)
+install.packages("usethis")
+library(usethis)
+
+```
+
+```{r}
+
+use_github()
+```
+
+
+
+
+```{r}
+activities_mmp <- read_csv("~/R/gc_open_data/data/activities_mmp.csv")
+```
+
+The first part of the script uses the MMP data to create a key that meets the following critera:(https://gist.github.com/mpuchowicz/3b04ee65e97a4d6c32ee577a6cd9ea31)
+
+1. Athlete has at least 100 power files for the year.
+2. The MMP for the year is at least 7200 seconds in duration.
+3. The MMP does not have obvious outlier data based on known virtual power issues and CP model parameters
+
+```{r}
+# remove known problems. These two indicate virtual power algorithm
+
+activities_mmp <- activities_mmp %>%
+  filter(`1` != 2000) %>%
+  filter(`1` != 1000)
+
+# remove values outside 99.9% percentile
+activities_mmp <- activities_mmp %>%
+  filter(`1` <= quantile(activities_mmp$`1`,0.999, na.rm = TRUE)) %>%
+  filter(`180` <= quantile(activities_mmp$`180`,0.999, na.rm = TRUE)) %>%
+  filter(`420` <= quantile(activities_mmp$`420`,0.999, na.rm = TRUE)) %>%
+  filter(`720` <= quantile(activities_mmp$`720`,0.999, na.rm = TRUE)) %>%
+  filter(`1200` <= quantile(activities_mmp$`1200`,0.999, na.rm = TRUE)) 
+
+# remove spikey data
+
+activities_mmp <- activities_mmp %>%
+  filter(`1` < `5`*1.3) %>%
+  filter(`1` < `2`*1.2) %>%
+  filter(`1` != `2`)
+
+```
+
+The default value for format argument of as.Date function is "%Y-%m-%d" which is matching with the format of date column of df.
+
+Hence, df$date <- as.Date(df$date) works perfectly. (I was getting NAs by using format = "%Y-%m-%d")
+
+```{r}
+# add a month and year column
+activities_mmp <- activities_mmp %>%
+  mutate(date = as.Date(date)) %>%
+  mutate(month = format(date, "%m")) %>%
+  mutate(month = as.numeric(month)) %>%
+  mutate(year = format(date, "%Y")) %>%
+  mutate(year = as.numeric(year)) %>%
+  mutate(quarter = quarter(date))
+
+```
+
+```{r}
+install.packages("tidyselect")
+library(tidyselect)
+
+# aggregrate year and quarterly bests
+athlete_years <- activities_mmp %>%
+  group_by(id, year) %>%
+  summarise(across(everything(), max))
+
+athlete_quarters <- activities_mmp %>%
+  group_by(id, year, quarter) %>%
+  summarise(across(everything(), max))
+
+# add count of number of yearly rides per id
+athlete_years_count <- activities_mmp %>%
+  group_by(id, year) %>%
+  count()
+
+# add count to athlete_years
+athlete_years <- left_join(athlete_years, athlete_years_count, by = c("id", "year"))
+
+# sum all athlete ride duration
+
+athlete_years_sum <- activities_mmp %>%
+  group_by(id, year) %>%
+  summarise(across(where(is.numeric), sum))
+
+athlete_years_sum <- athlete_years_sum %>%
+  select(id, year, distance, duration) %>%
+  dplyr::rename(year_distance = distance) %>%
+  dplyr::rename(year_duration = duration)
+
+athlete_years <-left_join(x = athlete_years, y = athlete_years_sum, by = c("id", "year"))
+
+
+```
+
+```{r}
+# get years with at least 52 rides (1 per week) & more than 120 mins total duration 
+
+full_athlete_years <- athlete_years %>%
+  dplyr::rename(year_rides = n) %>%
+  filter(year_rides >= 52) %>%
+  filter(year_duration >=7200)
+
+# number of records (6277)
+dim(full_athlete_years)
+
+```
+```{r}
+# use work-time model (provides 'middle' values) for CP & W'
+
+## use 3 (180), 7 (420), 12 (720) MMP values to estimate CP and W' for each user ID per year - stuck here
+
+
+```
+

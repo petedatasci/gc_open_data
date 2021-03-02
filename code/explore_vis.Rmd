@@ -1,0 +1,281 @@
+---
+title: "Initital Data Vis"
+author: "Peter Bonner"
+date: "01/01/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+library(tidyverse)
+library(readr)
+library(janitor)
+library(gtsummary)
+library(reshape)
+library(lubridate)
+library(readxl)
+library(reshape2)
+library(stringr)
+library(ggridges)
+```
+## Read in files
+
+```{r read in files}
+athletes <- read_csv("~/R/gc_open_data/data/athletes.csv")
+activities_mmp <- read_csv("~/R/gc_open_data/data/activities_mmp.csv")
+activities <- read_csv("~/R/gc_open_data/data/activities.csv")
+```
+# Structure of data 
+```{r dataset structures}
+str(athletes)
+str(activities_mmp)
+str(activities)
+```
+
+```{r view top of each data set}
+head(athletes)
+head(activities_mmp)
+head(activities)
+```
+
+# Filter 'activities'
+```{r filter activities data set}
+## Filter out any non-cycling activities & activities with no power values
+activities <- activities %>%
+  filter(sport =="Bike") %>%
+  drop_na(average_power)
+
+activities <- activities %>%
+  mutate(age = abs(age)) %>%
+  filter(age >= 18 & age <= 45)
+
+sum(is.na(activities))
+```
+
+```{r remvoe bad data}
+# Use modeled CP data to exclude unrealistic data
+
+cp_modelled_data <- read_xlsx("~/R/gc_open_data/data/model_power_data.xlsx",
+                              sheet = 2)
+activities_filter <- activities %>%
+  mutate(`1s_critical_power` = case_when(gender == "M" & `1s_critical_power` >= 2407 | gender == "F" & `1s_critical_power` >= 1739 ~ as.numeric(NA),TRUE ~ `1s_critical_power`)) %>%
+  mutate(`15s_critical_power` = case_when(gender == "M" & `15s_critical_power` >= 1647| gender == "F" & `15s_critical_power` >= 1226 ~ as.numeric(NA),TRUE ~ `15s_critical_power`)) %>%
+  mutate(`2m_critical_power` = case_when(gender == "M" & `2m_critical_power` >= 765 | gender == "F" & `2m_critical_power` >= 597 ~ as.numeric(NA), TRUE ~ `2m_critical_power`)) %>%
+  mutate(`3m_critical_power` = case_when(gender == "M" & `3m_critical_power` >= 675 | gender == "F" & `3m_critical_power` >= 531 ~ as.numeric(NA), TRUE ~ `3m_critical_power`)) %>%
+  mutate(`5m_critical_power` = case_when(gender == "M" & `5m_critical_power` >= 596 | gender == "F" & `5m_critical_power` >= 472 ~ as.numeric(NA), TRUE ~ `5m_critical_power`)) %>%
+  mutate(`8m_critical_power` = case_when(gender == "M" & `8m_critical_power` >= 549 | gender == "F" & `8m_critical_power` >= 437 ~ as.numeric(NA), TRUE ~ `8m_critical_power`)) %>%
+  mutate(`10m_critical_power` = case_when(gender == "M" & `10m_critical_power` >= 533 | gender == "F" & `10m_critical_power` >= 425 ~ as.numeric(NA), TRUE ~ `10m_critical_power`)) %>%
+  mutate(`20m_critical_power` = case_when(gender == "M" & `20m_critical_power` >= 499 | gender == "F" & `20m_critical_power` >= 400 ~ as.numeric(NA), TRUE ~ `20m_critical_power`)) %>%
+  mutate(`30m_critical_power` = case_when(gender == "M" & `30m_critical_power` >= 488 | gender == "F" & `30m_critical_power` >= 391 ~ as.numeric(NA), TRUE ~ `30m_critical_power`))
+
+sum(is.na(activities_filter))
+
+summary(activities_filter)
+
+```
+```{r cp values for activities}
+activities_filter %>%
+  select(gender,`1s_critical_power`,`15s_critical_power`, `3m_critical_power`, `5m_critical_power`, `8m_critical_power`, `10m_critical_power`, `20m_critical_power`, `30m_critical_power`) %>%
+  melt(id.var = "gender") %>%
+  ggplot(aes(x = value, y = variable, fill = gender)) +
+  geom_density_ridges(alpha = 0.5) +
+  # geom_boxplot(alpha = 0.5,outlier.colour = "grey", outlier.shape = 1) +
+  #facet_wrap( ~ gender, scales = "free") +
+  scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  #coord_flip() +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 4)) +
+  xlim(c(0,2500)) +
+  theme_minimal()
+  
+```
+
+```{r distribution of activities metrics}
+activities_filter %>%
+  ggplot(aes(x = average_speed, fill = gender)) +
+  geom_density(color="#e9ecef", alpha=0.5, position = 'identity') +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  theme_minimal() +
+  xlim(c(0,60))
+
+activities_filter %>%
+  ggplot(aes(x = average_power, fill = gender)) +
+  geom_density(color="#e9ecef", alpha=0.5, position = 'identity') +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  xlim(c(0,1000)) +
+  theme_minimal()
+
+activities_filter %>%
+  ggplot(aes(x = average_hr, fill = gender)) +
+  geom_density(color="#e9ecef", alpha=0.5, position = 'identity') +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  theme_minimal()
+```
+
+```{r}
+activities_filter %>%
+  filter(workout_time > 43200) %>%
+  str()
+```
+
+
+
+```{r}
+
+activities_filter %>%
+  filter(average_speed<= 100) %>%
+  ggplot(aes(x = gender, y = average_speed)) +
+  geom_boxplot(alpha=0.5) +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  theme_minimal()
+
+activities_filter %>%
+  filter(average_power <=2407) %>%
+  ggplot(aes(x = gender, y = average_power)) +
+  geom_boxplot(alpha=0.5) +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  theme_minimal()
+
+activities_filter %>%
+  ggplot(aes(x = gender, y = average_hr)) +
+  geom_boxplot(alpha=0.5) +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  theme_minimal()
+
+activities_filter %>%
+  summarise(n = sum(average_speed >=200, na.rm = TRUE))
+
+```
+
+
+
+
+```{r filter activities_mmp}
+activities_mmp_filter <- activities_mmp[(activities_mmp$id %in% activities$id),]
+```
+
+
+```{r filter athltes data set}
+## Change -ve ages to +ve numbers
+athletes <- athletes %>%
+  mutate(age = abs(age)) %>%
+## 18-45 standard research recruitment criteria
+  filter(age >= 18 & age <= 45)
+
+athletes <- athletes %>%
+  select(-run, -swim,-other)
+
+```
+
+```{r athlete variable distributions}
+# athletes %>%
+#   select(age,`1s_critical_power` ,`3m_critical_power`, `5m_critical_power`, `20m_critical_power`) %>%
+#   gather()%>%  # convert to key-value pairs
+#   ggplot(aes(x = value)) +
+#   facet_wrap(~ key, scales = "free") +  # separate panels
+#   stat_density()
+
+athletes %>%
+  ggplot(aes(x = `1s_critical_power`, fill = gender)) +
+  geom_density(color="#e9ecef", alpha=0.5, position = 'identity') +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  theme_minimal()
+
+athletes %>%
+  ggplot(aes(x = `3m_critical_power`, fill = gender)) +
+  geom_density(color="#e9ecef", alpha=0.5, position = 'identity') +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  theme_minimal()
+
+athletes %>%
+  ggplot(aes(x = `20m_critical_power`, fill = gender)) +
+  geom_density(color="#e9ecef", alpha=0.5, position = 'identity') +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  theme_minimal()
+
+athletes %>%
+  ggplot(aes(x = age, fill = gender)) +
+  geom_density(color="#e9ecef", alpha=0.5, position = 'identity') +
+    scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  theme_minimal()
+
+
+```
+
+```{r visualise outliers}
+
+athletes %>%
+  select(gender,`1s_critical_power`,`15s_critical_power`, `3m_critical_power`, `5m_critical_power`, `8m_critical_power`, `10m_critical_power`, `20m_critical_power`, `30m_critical_power`) %>%
+  melt(id.var = "gender") %>%
+  ggplot(aes(x = value, y = variable, fill = gender)) +
+  geom_density_ridges(alpha = 0.5) +
+  # geom_boxplot(alpha = 0.5,outlier.colour = "grey", outlier.shape = 1) +
+  #facet_wrap( ~ gender, scales = "free") +
+  scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  #coord_flip() +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 4)) +
+  theme_minimal()
+  
+
+```
+
+
+
+
+
+```{r filter athletes by CP model}
+athletes_filter <- athletes %>%
+  filter(gender == "M" & `1s_critical_power` <= 2407 | gender == "F" & `1s_critical_power` <= 1739,
+         gender == "M" & `15s_critical_power` <= 1647| gender == "F" & `15s_critical_power` <= 1226,
+         gender == "M" & `2m_critical_power` <= 765 | gender == "F" & `2m_critical_power` <= 597,
+         gender == "M" & `3m_critical_power` <= 675 | gender == "F" & `3m_critical_power` <= 531, 
+         gender == "M" & `5m_critical_power` <= 596 | gender == "F" & `5m_critical_power` <= 472,
+         gender == "M" & `8m_critical_power` <= 549 | gender == "F" & `8m_critical_power` <= 437,
+         gender == "M" & `10m_critical_power` <= 533 | gender == "F" & `10m_critical_power` <= 425, 
+         gender == "M" & `20m_critical_power` <= 499 | gender == "F" & `20m_critical_power` <= 400,
+         gender == "M" & `30m_critical_power` <= 488 | gender == "F" & `30m_critical_power` <= 391)
+
+
+```
+
+```{r athletes distribution of CP}
+
+athletes_filter %>%
+  select(gender,`1s_critical_power`,`15s_critical_power`, `3m_critical_power`, `5m_critical_power`, `8m_critical_power`, `10m_critical_power`, `20m_critical_power`, `30m_critical_power`) %>%
+  melt(id.var = "gender") %>%
+  ggplot(aes(x = value, y = variable, fill = gender)) +
+  geom_density_ridges(alpha = 0.5) +
+  # geom_boxplot(alpha = 0.5,outlier.colour = "grey", outlier.shape = 1) +
+  #facet_wrap( ~ gender, scales = "free") +
+  scale_fill_manual(values=c("#69b3a2", "#404080")) +
+  #coord_flip() +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 4)) +
+  scale_x_continuous(breaks=seq(0,2500,500)) +
+  xlab("Power Output (W)") +
+  theme_minimal() +
+  theme(axis.title.y = element_blank())
+
+```
+
+
+```{r mean & SD of athletes data}
+athletes_stbl <- athletes_filter %>%
+  select(age, gender, `1s_critical_power`,`15s_critical_power`, `2m_critical_power`,`3m_critical_power`, `5m_critical_power`, `8m_critical_power`, `20m_critical_power`, `30m_critical_power`) %>%
+  tbl_summary(
+    by = gender,
+    statistic = list(all_continuous() ~ "{mean} ({sd})",
+                     all_categorical() ~ "{n} / {N} ({p}%)"),
+    missing = "no"
+  ) %>%
+  add_n() %>%
+  modify_header(label = "Variable") %>%
+  as_gt(
+  )
+
+athletes_stbl
+
+```
+
+
