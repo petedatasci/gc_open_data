@@ -3,6 +3,8 @@ title: "explore_2"
 author: "Peter Bonner"
 date: "25/02/2021"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r setup, include=FALSE}
@@ -10,7 +12,7 @@ knitr::opts_chunk$set(cache = TRUE, warning = FALSE,
                       message = FALSE,echo = TRUE, dpi = 180,
                       fig.width = 8, fig.height = 5)
 
-theme_set(theme_minimal())
+
 ```
 
 ```{r libraries}
@@ -24,6 +26,7 @@ library(stringr)
 library(lubridate)
 # library(usethis)
 # library(gitcreds)
+theme_set(theme_minimal())
 
 ```
 
@@ -139,9 +142,12 @@ dim(full_athlete_years)
 
 ```
 
+## Create CP Model
+
 ```{r}
 library(tidymodels)
 
+# Create long format data frame 
 
 yearly_cp <- full_athlete_years %>%
   select(id, year, `180`, `420`,`720`) %>%
@@ -150,44 +156,36 @@ yearly_cp <- full_athlete_years %>%
          work_done = trial_duration * power_output)
 
 
-nested <- full_athlete_years %>%
+# Nest critical power trial data 
+yearly_cp_nest <- yearly_cp %>%
   group_by(id,year) %>%
-  nest(cp_trials = c(`180`,`420`,`720`)) 
+  nest()
 
-nested$cp_trials %>%
-  pivot_longer(cols = `180`:`720`,
-               names_to = "trial_duration",
-               values_to = "power_output")
-  
-  
+# iterate over using linear CP model
+yearly_cp_nest <- yearly_cp_nest %>%
+  mutate(model = map(data, ~ lm(work_done ~ trial_duration, data = .x)))
 
+#iterate over the model with the function tidy (which puts lm output into tidy format) & unnest coeffs to extract cp & wprime into separate columns
+slopes <- yearly_cp_nest %>%
+  mutate(coefs = map(model, tidy)) %>%   
+ unnest_wider(coefs) %>%
+ select(id,year,estimate, std.error)
 
-tidy_cp_df <- tidy_cp_df %>%
-  mutate(model = map(cp_trials, ~ lm(work_done ~ tte_column, data = .x)))
-  
-slopes <- tidy_cp_df %>%
-  mutate(coefs = map(model, tidy)) %>% # iterate over the model with the function tidy (which puts lm output into tidy format)
-  unnest(coefs)
-```
+# rename unnested columns and unnest std.error to get cp & wprime error
+slopes <- slopes %>%
+  unnest_wider(estimate) %>%
+  dplyr::rename(w_prime = ...1,
+                critical_power = ...2) %>%
+  unnest_wider(std.error) %>%
+  dplyr::rename(w_prime_error = ...1,
+                critical_power_error = ...2)
 
-## Create CP Model
+# join with full_athlete_years dataframe
 
-```{r}
-## use work-time model (provides 'middle' values) for CP & W'
-
-# Formula
-cp_formula <- glue::glue("{power_output_column} * {tte_column} ~ {tte_column}")
-
-# Model
-cp_model <- lm(
-  formula = cp_formula,
-  data=.data
-)
-
-
-
-## use 3 (180), 7 (420), 12 (720) MMP values to estimate CP and W' for each user ID per year - stuck here
-
+full_athlete_years <- left_join(full_athlete_years, slopes,
+                                by = c("id", "year"))
 
 ```
+
+
 
