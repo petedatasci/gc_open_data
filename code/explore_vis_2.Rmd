@@ -6,7 +6,11 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE, warning = FALSE,
+                      message = FALSE,echo = TRUE, dpi = 180,
+                      fig.width = 8, fig.height = 5)
+
+theme_set(theme_minimal())
 ```
 
 ```{r libraries}
@@ -17,19 +21,19 @@ library(reshape)
 library(readxl)
 library(reshape2)
 library(stringr)
-install.packages("usethis")
-library(usethis)
-library(gitcreds)
+library(lubridate)
+# library(usethis)
+# library(gitcreds)
 
 ```
 
 ```{r}
 
-gitcreds_set()
-
-use_git(message = "Initial commit")
-
-use_github()
+# gitcreds_set()
+# 
+# use_git(message = "Initial commit")
+# 
+# use_github()
 ```
 
 
@@ -74,7 +78,7 @@ The default value for format argument of as.Date function is "%Y-%m-%d" which is
 Hence, df$date <- as.Date(df$date) works perfectly. (I was getting NAs by using format = "%Y-%m-%d")
 
 ```{r}
-# add a month and year column
+# add a month, year and quarter columns
 activities_mmp <- activities_mmp %>%
   mutate(date = as.Date(date)) %>%
   mutate(month = format(date, "%m")) %>%
@@ -86,7 +90,7 @@ activities_mmp <- activities_mmp %>%
 ```
 
 ```{r}
-install.packages("tidyselect")
+
 library(tidyselect)
 
 # aggregrate year and quarterly bests
@@ -134,8 +138,53 @@ full_athlete_years <- athlete_years %>%
 dim(full_athlete_years)
 
 ```
+
 ```{r}
-# use work-time model (provides 'middle' values) for CP & W'
+library(tidymodels)
+
+
+yearly_cp <- full_athlete_years %>%
+  select(id, year, `180`, `420`,`720`) %>%
+  pivot_longer(`180`:`720`, names_to = "trial_duration", values_to = "power_output") %>%
+  mutate(trial_duration = as.numeric(trial_duration),
+         work_done = trial_duration * power_output)
+
+
+nested <- full_athlete_years %>%
+  group_by(id,year) %>%
+  nest(cp_trials = c(`180`,`420`,`720`)) 
+
+nested$cp_trials %>%
+  pivot_longer(cols = `180`:`720`,
+               names_to = "trial_duration",
+               values_to = "power_output")
+  
+  
+
+
+tidy_cp_df <- tidy_cp_df %>%
+  mutate(model = map(cp_trials, ~ lm(work_done ~ tte_column, data = .x)))
+  
+slopes <- tidy_cp_df %>%
+  mutate(coefs = map(model, tidy)) %>% # iterate over the model with the function tidy (which puts lm output into tidy format)
+  unnest(coefs)
+```
+
+## Create CP Model
+
+```{r}
+## use work-time model (provides 'middle' values) for CP & W'
+
+# Formula
+cp_formula <- glue::glue("{power_output_column} * {tte_column} ~ {tte_column}")
+
+# Model
+cp_model <- lm(
+  formula = cp_formula,
+  data=.data
+)
+
+
 
 ## use 3 (180), 7 (420), 12 (720) MMP values to estimate CP and W' for each user ID per year - stuck here
 
