@@ -187,5 +187,79 @@ full_athlete_years <- left_join(full_athlete_years, slopes,
 
 ```
 
+```{r}
+## Remove dodgy wprime and cp values
 
+full_athlete_years <- full_athlete_years %>%
+  filter(w_prime > 1000,
+         w_prime < 50000) %>%
+  filter(critical_power > 100,
+         critical_power < 500)
+```
+
+## Data Visualisation
+
+```{r}
+## critical power distribution
+full_athlete_years %>%
+  ggplot(aes(x = critical_power)) +
+  geom_histogram(binwidth = 10) +
+  geom_vline(aes(xintercept = mean(critical_power)),
+                               colour = "blue",
+                               linetype = "dashed")
+
+```
+
+```{r}
+## wprime distribution
+full_athlete_years %>%
+  ggplot(aes(x = w_prime)) +
+  geom_histogram(binwidth = 1000)
+```
+
+```{r}
+## plot power duration curves?
+
+full_athlete_years %>%
+  select(id, year, c(`1`:`1800`)) %>%
+  filter(year==2017) %>%
+  pivot_longer(cols = `1`:`1800`,
+               names_to = "duration",
+               values_to = "power_output") %>%
+  mutate(duration = as.numeric(duration)) %>%
+  drop_na() %>%
+  ggplot(aes(x = duration, y = power_output, group = id)) +
+  geom_line(stat = "smooth",
+            size = 0.5,
+            alpha = 0.1,
+            colour = "#f37b59") +
+  ylim(0,2000) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+```{r}
+# What summary statistics
+library(gtsummary)
+
+full_athlete_years %>%
+  mutate(year = format(date, "%Y")) %>%
+  group_by(year) %>%
+  count()
+
+## plot cp vs wprime
+
+full_athlete_years %>%
+  ggplot(aes(x = critical_power, y = w_prime)) +
+  geom_jitter(alpha = 0.3) +
+  geom_smooth(method = "lm")
+
+## long duration vs cp
+
+full_athlete_years %>%
+  
+  ggplot(aes(x = duration, y = critical_power)) +
+  geom_jitter(alpha = 0.3)
+
+```
 
