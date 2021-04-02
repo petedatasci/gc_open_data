@@ -1,0 +1,510 @@
+---
+title: "Athlete Bests"
+author: "Peter Bonner"
+date: "01/04/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, warning = FALSE,
+                      message = FALSE,echo = TRUE, dpi = 180,
+                      fig.width = 8, fig.height = 5)
+
+
+```
+
+```{r libraries}
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(janitor)
+library(reshape)
+library(readxl)
+library(reshape2)
+library(stringr)
+library(lubridate)
+# library(usethis)
+# library(gitcreds)
+theme_set(theme_minimal())
+
+```
+
+```{r}
+athletes <- read_csv("~/R/gc_open_data/data/athletes.csv") %>%
+  select(-run,-swim,-other)
+```
+
+## Clean Data
+
+```{r}
+# remove known problems. These two indicate virtual power algorithm
+athletes_clean <- athletes %>%
+  filter(`1s_critical_power` != 2000,
+         `1s_critical_power` != 1000) %>%
+  filter(if_all(ends_with("_power"), ~. < 2500))
+
+# Clean age and body mass data
+athletes_clean <- athletes_clean %>%
+  filter(age >= 18 & age <= 60) %>%
+  filter(weightkg >= 40 & weightkg <= 150) %>%
+  # remove duplicate columns
+  select(id, gender, age, bike, ends_with("power"),`720s_peak`, weightkg, weightstd)
+
+
+# Remove power values outside 99% percentile for each gender
+athletes_filter <- athletes_clean %>%
+  group_by(gender) %>%
+  filter(`1s_critical_power` < quantile(`1s_critical_power`,0.99, na.rm = TRUE),
+         `3m_critical_power` < quantile(`3m_critical_power`, 0.99, na.rm = TRUE),
+         `5m_critical_power` < quantile(`5m_critical_power`, 0.99, na.rm = TRUE),
+         `8m_critical_power` < quantile(`8m_critical_power`, 0.99, na.rm = TRUE),
+         `720s_peak` < quantile(`720s_peak`, 0.99, na.rm = TRUE))
+
+
+
+
+```
+
+
+# Create CP Model
+
+```{r}
+library(tidymodels)
+# Convert to long format
+athletes_filter_long <- athletes_filter %>%
+  select(id, gender, age, `3m_critical_power`, `5m_critical_power`, `8m_critical_power`, `720s_peak`,weightkg) %>%
+  dplyr::rename(`180` = `3m_critical_power`,
+                `300` = `5m_critical_power`,
+                `480` = `8m_critical_power`,
+                `720` = `720s_peak`) %>%
+  pivot_longer(`180`:`720`, names_to = "duration_s", values_to = "power_output") %>%
+  mutate(duration_s = as.numeric(duration_s),
+    work_done = duration_s * power_output)
+
+# Nest model data
+athletes_filter_long <- athletes_filter_long %>%
+  group_by(id) %>%
+  nest(data = c(duration_s,power_output,work_done))
+
+athletes_cp <- athletes_filter_long %>%
+  mutate(model = map(data, ~lm(work_done ~ duration_s, data = .x)))
+
+# Retreive CP/Wprime values
+
+## iterate over the model with the function tidy (which puts lm output into tidy format) & unnest coeffs to extract cp & wprime into separate columns
+athletes_cp <- athletes_cp %>%
+  mutate(coefs = map(model, tidy)) %>%   
+ unnest_wider(coefs) %>%
+  select(-statistic, -p.value)
+
+## rename unnested columns and unnest std.error to get cp & wprime error
+athletes_cp <- athletes_cp %>%
+  unnest_wider(estimate) %>%
+  dplyr::rename(w_prime = ...1,
+                critical_power = ...2) %>%
+  unnest_wider(std.error) %>%
+  dplyr::rename(w_prime_error = ...1,
+                critical_power_error = ...2)
+
+# Filter out unlikely values
+athletes_cp <- athletes_cp %>%
+  filter(critical_power != 0) %>%
+  filter(w_prime > 1000,
+         w_prime < 50000) %>%
+  filter(critical_power > 100,
+         critical_power < 500)
+
+```
+
+# Data Visualisation
+
+
+```{r}
+# Create stats for raincloud plots
+athletes_cp_stats <- athletes_cp %>%
+  group_by(gender) %>%
+  mutate(n = n(),
+         cp_median = median(critical_power),
+         cp_mean = mean(critical_power),
+         cp_max = max(critical_power)) %>%
+  mutate(w_prime_median = median(w_prime),
+         w_prime_mean = mean(w_prime),
+         w_prime_max = max(w_prime)) %>%
+  mutate(cp_error_median = median(critical_power_error),
+         cp_error_mean = mean(critical_power_error),
+         cp_error_max = max(critical_power_error)) %>%
+  mutate(cp_wkg = critical_power/weightkg,
+         cp_wkg_median = median(cp_wkg),
+         cp_wkg_mean = mean(cp_wkg),
+         cp_wkg_max = max(cp_wkg)) %>%
+  ungroup() %>%
+  mutate(gender_num = as.numeric(fct_rev(gender)))
+
+athletes_cp_stats <- athletes_filter %>%
+  select(id,gender,`1s_critical_power`, `15s_critical_power`) %>%
+  left_join(athletes_cp_stats, athletes_filter, by = c("id","gender")) %>%
+  drop_na()
+
+```
+
+```{r} 
+# Critical power distribution
+athletes_cp_stats %>%
+  ggplot(aes(x = critical_power, y = gender_num, colour = gender)) +
+  stat_summary(
+    geom = "linerange",
+    fun.min = function(x) -Inf,
+    fun.max = function(x) median(x, na.rm = TRUE),
+    linetype = "dotted",
+    orientation = "y",
+    size = .7
+  ) +
+  geom_point(
+    aes(y = gender_num - .15),
+    shape = "|",
+    size = 5,
+    alpha = .33
+  ) +
+  ggdist::stat_halfeye(
+    aes(
+      y = gender_num,
+      color = gender,
+      fill = after_scale(colorspace::lighten(color, .5))
+    ),
+    shape = 18,
+    point_size = 3,
+    interval_size = 1.8,
+    adjust = .5,
+    .width = c(0, 1)
+  ) +
+  geom_text(
+    aes(x = cp_median, label = format(round(cp_median, 0), nsmall = 1)),
+    stat = "unique",
+    color = "white",
+    fontface = "bold",
+    size = 3.4,
+    nudge_y = .15
+  ) +
+  geom_text(
+    aes(x = cp_max, label = glue::glue("n = {n}")),
+    stat = "unique",
+    fontface = "bold",
+    size = 3.5,
+    hjust = 1,
+    vjust = -0.75,
+    nudge_x = .01,
+    nudge_y = .02
+  ) +
+  coord_cartesian(clip = "off", expand = FALSE) +
+  labs(
+    x = "Critical Power (W)",
+    y = NULL,
+    title = "Raincloud plot showing the distribution of critical power by gender"
+    ) +
+  scale_x_continuous(
+    limits = c(100,500),
+    breaks = seq(100,500, by = 50)
+  ) +
+  scale_y_continuous(
+    limits = c(.55, NA),
+    breaks = 1:2,
+    labels = c("Male", "Female")
+  ) +
+  scale_fill_manual(values=c("#a86826", "#006c89"), guide = "none") +
+  scale_colour_manual(values=c("#a86826", "#006c89"), guide = "none") +
+  theme(
+    panel.grid.major.x = element_line(size = .35),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(size = 13),
+    axis.ticks.length = unit(0, "lines"),
+    plot.title.position = 'plot',
+    plot.subtitle = element_text(margin = margin(t = 5, b = 10)),
+    plot.margin = margin(10, 25, 10, 25),
+    legend.position = "none"
+  )
+```
+
+```{r}
+# CP as w/kg distribution
+athletes_cp_stats %>%
+  ggplot(aes(x = cp_wkg, y = gender_num, colour = gender)) +
+  stat_summary(
+    geom = "linerange",
+    fun.min = function(x) -Inf,
+    fun.max = function(x) median(x, na.rm = TRUE),
+    linetype = "dotted",
+    orientation = "y",
+    size = .7
+  ) +
+  geom_point(
+    aes(y = gender_num - .15),
+    shape = "|",
+    size = 5,
+    alpha = .33
+  ) +
+  ggdist::stat_halfeye(
+    aes(
+      y = gender_num,
+      color = gender,
+      fill = after_scale(colorspace::lighten(color, .5))
+    ),
+    shape = 18,
+    point_size = 3,
+    interval_size = 1.8,
+    adjust = .5,
+    .width = c(0, 1)
+  ) +
+  geom_text(
+    aes(x = cp_wkg_median, label = format(round(cp_wkg_median, 2), nsmall = 2)),
+    stat = "unique",
+    color = "white",
+    fontface = "bold",
+    size = 3.4,
+    nudge_y = .15
+  ) +
+  geom_text(
+    aes(x = cp_wkg_max, label = glue::glue("n = {n}")),
+    stat = "unique",
+    fontface = "bold",
+    size = 3.5,
+    hjust = 1,
+    vjust = -0.75,
+    nudge_x = .01,
+    nudge_y = .02
+  ) +
+  coord_cartesian(clip = "off", expand = FALSE) +
+  labs(
+    x = "Critical Power (W/kg)",
+    y = NULL,
+    title = "Raincloud plot showing the distribution of critical power relative to body mass"
+    ) +
+  scale_x_continuous(
+    limits = c(0.5,8),
+    breaks = seq(0.5,8, by = 0.5)
+  ) +
+  scale_y_continuous(
+    limits = c(.55, NA),
+    breaks = 1:2,
+    labels = c("Male", "Female")
+  ) +
+  scale_fill_manual(values=c("#a86826", "#006c89"), guide = "none") +
+  scale_colour_manual(values=c("#a86826", "#006c89"), guide = "none") +
+  theme(
+    panel.grid.major.x = element_line(size = .35),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(size = 13),
+    axis.ticks.length = unit(0, "lines"),
+    plot.title.position = 'plot',
+    plot.subtitle = element_text(margin = margin(t = 5, b = 10)),
+    plot.margin = margin(10, 25, 10, 25),
+    legend.position = "none"
+  )
+
+```
+
+
+```{r}
+# W' distribution across genders
+
+athletes_cp_stats %>%
+  ggplot(aes(x = w_prime, y = gender_num, colour = gender)) +
+  stat_summary(
+    geom = "linerange",
+    fun.min = function(x) -Inf,
+    fun.max = function(x) median(x, na.rm = TRUE),
+    linetype = "dotted",
+    orientation = "y",
+    size = .7
+  ) +
+  geom_point(
+    aes(y = gender_num - .15),
+    shape = "|",
+    size = 5,
+    alpha = .33
+  ) +
+  ggdist::stat_halfeye(
+    aes(
+      y = gender_num,
+      color = gender,
+      fill = after_scale(colorspace::lighten(color, .5))
+    ),
+    shape = 18,
+    point_size = 3,
+    interval_size = 1.8,
+    adjust = .5,
+    .width = c(0, 1)
+  ) +
+  geom_text(
+    aes(x = w_prime_median, label = format(round(w_prime_median, 0), nsmall = 1)),
+    stat = "unique",
+    color = "white",
+    fontface = "bold",
+    size = 3.4,
+    nudge_y = .15
+  ) +
+  geom_text(
+    aes(x = w_prime_max, label = glue::glue("n = {n}")),
+    stat = "unique",
+    fontface = "bold",
+    size = 3.5,
+    hjust = 1,
+    vjust = -0.75,
+    nudge_x = .01,
+    nudge_y = .02
+  ) +
+  coord_cartesian(clip = "off", expand = FALSE) +
+  labs(
+    x = "W' (J)",
+    y = NULL,
+    title = "Raincloud plot showing the distribution of W' by gender"
+    ) +
+  scale_x_continuous(
+    limits = c(1000,50000),
+    breaks = seq(1000,50000, by = 5000)
+  ) +
+  scale_y_continuous(
+    limits = c(.55, NA),
+    breaks = 1:2,
+    labels = c("Male", "Female")
+  ) +
+  scale_fill_manual(values=c("#a86826", "#006c89"), guide = "none") +
+  scale_colour_manual(values=c("#a86826", "#006c89"), guide = "none") +
+  theme(
+    panel.grid.major.x = element_line(size = .35),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(size = 13),
+    axis.ticks.length = unit(0, "lines"),
+    plot.title.position = 'plot',
+    plot.subtitle = element_text(margin = margin(t = 5, b = 10)),
+    plot.margin = margin(10, 25, 10, 25),
+    legend.position = "none"
+  )
+
+```
+
+```{r}
+# Error distribution: who performs the tests better?
+
+athletes_cp_stats %>%
+  ggplot(aes(x = critical_power_error, y = gender_num, colour = gender)) +
+  stat_summary(
+    geom = "linerange",
+    fun.min = function(x) -Inf,
+    fun.max = function(x) median(x, na.rm = TRUE),
+    linetype = "dotted",
+    orientation = "y",
+    size = .7
+  ) +
+  geom_point(
+    aes(y = gender_num - .15),
+    shape = "|",
+    size = 5,
+    alpha = .33
+  ) +
+  ggdist::stat_halfeye(
+    aes(
+      y = gender_num,
+      color = gender,
+      fill = after_scale(colorspace::lighten(color, .5))
+    ),
+    shape = 18,
+    point_size = 3,
+    interval_size = 1.8,
+    adjust = .5,
+    .width = c(0, 1)
+  ) +
+  geom_text(
+    aes(x = cp_error_median, label = format(round(cp_error_median, 0), nsmall = 1)),
+    stat = "unique",
+    color = "white",
+    fontface = "bold",
+    size = 3.4,
+    nudge_y = .15
+  ) +
+  geom_text(
+    aes(x = cp_error_max, label = glue::glue("n = {n}")),
+    stat = "unique",
+    fontface = "bold",
+    size = 3.5,
+    hjust = 1,
+    vjust = -0.75,
+    nudge_x = .01,
+    nudge_y = .02
+  ) +
+  coord_cartesian(clip = "off", expand = FALSE) +
+  labs(
+    x = "Critical power error (W)",
+    y = NULL,
+    title = "Raincloud plot showing the distribution of critical power error by gender"
+    ) +
+  scale_x_continuous(
+    limits = c(0,55),
+    breaks = seq(0,55, by = 5)
+  ) +
+  scale_y_continuous(
+    limits = c(.55, NA),
+    breaks = 1:2,
+    labels = c("Male", "Female")
+  ) +
+  scale_fill_manual(values=c("#a86826", "#006c89"), guide = "none") +
+  scale_colour_manual(values=c("#a86826", "#006c89"), guide = "none") +
+  theme(
+    panel.grid.major.x = element_line(size = .35),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(size = 13),
+    axis.ticks.length = unit(0, "lines"),
+    plot.title.position = 'plot',
+    plot.subtitle = element_text(margin = margin(t = 5, b = 10)),
+    plot.margin = margin(10, 25, 10, 25),
+    legend.position = "none"
+  )
+```
+
+```{r}
+# W' as a function of body mass
+
+athletes_cp_stats %>%
+  ggplot(aes(x = weightkg, y = w_prime, colour = gender)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
+  scale_fill_manual(values=c("#a86826", "#006c89")) +
+  scale_colour_manual(values=c("#a86826", "#006c89")) +
+  labs(x = "Body Mass (Kg)",
+       y = "W' (J)",
+       colour = "Gender") +
+  scale_x_continuous(limits = c(30,150),
+                     breaks = seq(30,150, by = 15))
+```
+
+```{r}
+# W' vs 1s power
+athletes_cp_stats %>%
+  ggplot(aes(x = `1s_critical_power`, y = `w_prime`, colour = gender)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
+  scale_fill_manual(values=c("#a86826", "#006c89")) +
+  scale_colour_manual(values=c("#a86826", "#006c89")) +
+  labs(x = "1s Peak Power (W)",
+       y = "W' (J/kg)",
+       colour = "Gender") +
+  scale_y_continuous(limits = c(1000,50000),
+                     breaks = seq(1000,50000, by = 5000))
+
+# W' vs 15s power
+athletes_cp_stats %>%
+  ggplot(aes(x = `15s_critical_power`, y = w_prime , colour = gender)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
+  scale_fill_manual(values=c("#a86826", "#006c89")) +
+  scale_colour_manual(values=c("#a86826", "#006c89")) +
+  labs(x = "15s Peak Power (W)",
+       y = "W' (J)",
+       colour = "Gender") +
+  scale_y_continuous(limits = c(1000,50000),
+                     breaks = seq(1000,50000, by = 5000))
+
+```
+
