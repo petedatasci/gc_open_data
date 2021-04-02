@@ -150,6 +150,7 @@ athletes_cp_stats <- athletes_filter %>%
 
 ```
 
+
 ```{r} 
 # Critical power distribution
 athletes_cp_stats %>%
@@ -502,6 +503,68 @@ athletes_cp_stats %>%
   scale_colour_manual(values=c("#a86826", "#006c89")) +
   labs(x = "15s Peak Power (W)",
        y = "W' (J)",
+       colour = "Gender") +
+  scale_y_continuous(limits = c(1000,50000),
+                     breaks = seq(1000,50000, by = 5000))
+
+```
+
+```{r}
+# CP vs W'
+athletes_cp_stats %>%
+  ggplot(aes(x = critical_power, y = w_prime , colour = gender)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
+  scale_fill_manual(values=c("#a86826", "#006c89")) +
+  scale_colour_manual(values=c("#a86826", "#006c89")) +
+  labs(x = "Critical Power (W)",
+       y = "W' (J)",
+       colour = "Gender") +
+  scale_x_continuous(limits = c(100,500),
+                     breaks = seq(100,500, by = 50)) +
+  scale_y_continuous(limits = c(1000,50000),
+                     breaks = seq(1000,50000, by = 5000))
+
+# CP vs 1s Peak Power
+athletes_cp_stats %>%
+  ggplot(aes(x = `1s_critical_power`, y = critical_power , colour = gender)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
+  scale_fill_manual(values=c("#a86826", "#006c89")) +
+  scale_colour_manual(values=c("#a86826", "#006c89")) +
+  labs(x = "1s Peak Power (W)",
+       y = "Critical Power (W)",
+       colour = "Gender") +
+  scale_y_continuous(limits = c(100,500),
+                     breaks = seq(100,500, by = 50)) +
+  scale_x_continuous(limits = c(0,2500),
+                     breaks = seq(0,2500, by = 250))
+
+```
+
+```{r}
+# Age vs CP
+athletes_cp_stats %>%
+  ggplot(aes(x = age, y = critical_power , colour = gender)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
+  scale_fill_manual(values=c("#a86826", "#006c89")) +
+  scale_colour_manual(values=c("#a86826", "#006c89")) +
+  labs(x = "Age",
+       y = "Critical Power",
+       colour = "Gender") +
+  scale_y_continuous(limits = c(100,500),
+                     breaks = seq(100,500, by = 50))
+
+# Age vs W'
+athletes_cp_stats %>%
+  ggplot(aes(x = age, y = w_prime , colour = gender)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
+  scale_fill_manual(values=c("#a86826", "#006c89")) +
+  scale_colour_manual(values=c("#a86826", "#006c89")) +
+  labs(x = "Age",
+       y = "W'",
        colour = "Gender") +
   scale_y_continuous(limits = c(1000,50000),
                      breaks = seq(1000,50000, by = 5000))
