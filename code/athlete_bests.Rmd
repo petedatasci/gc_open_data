@@ -33,21 +33,19 @@ theme_set(theme_minimal())
 ```
 
 ```{r}
-athletes <- read_csv("~/R/gc_open_data/data/athletes.csv") %>%
+athletes <- read_csv("data/athletes.csv") %>%
   select(-run,-swim,-other)
 ```
 
 ## Clean Data
 
 ```{r}
-# remove known problems. These two indicate virtual power algorithm
+# 1st filter indicate virtual power algorithm
 athletes_clean <- athletes %>%
   filter(`1s_critical_power` != 2000,
          `1s_critical_power` != 1000) %>%
-  filter(if_all(ends_with("_power"), ~. < 2500))
-
+  filter(if_all(ends_with("_power"), ~. < 2500)) %>%
 # Clean age and body mass data
-athletes_clean <- athletes_clean %>%
   filter(age >= 18 & age <= 60) %>%
   filter(weightkg >= 40 & weightkg <= 150) %>%
   # remove duplicate columns
@@ -62,9 +60,6 @@ athletes_filter <- athletes_clean %>%
          `5m_critical_power` < quantile(`5m_critical_power`, 0.99, na.rm = TRUE),
          `8m_critical_power` < quantile(`8m_critical_power`, 0.99, na.rm = TRUE),
          `720s_peak` < quantile(`720s_peak`, 0.99, na.rm = TRUE))
-
-
-
 
 ```
 
@@ -148,6 +143,20 @@ athletes_cp_stats <- athletes_filter %>%
   left_join(athletes_cp_stats, athletes_filter, by = c("id","gender")) %>%
   drop_na()
 
+```
+
+```{r}
+# Age and body mass distribution
+athletes_cp_stats %>%
+  ggplot(aes(x = age, fill = gender)) +
+  geom_density(colour = "#e9ecef",alpha = 0.5, position = "identity") +
+  scale_fill_manual(values=c("#a86826", "#006c89"))
+
+athletes_cp_stats %>%
+  ggplot(aes(x = weightkg, fill = gender)) +
+  geom_density(colour = "#e9ecef",alpha = 0.5, position = "identity") +
+  scale_fill_manual(values=c("#a86826", "#006c89"))
+  
 ```
 
 
@@ -569,5 +578,93 @@ athletes_cp_stats %>%
   scale_y_continuous(limits = c(1000,50000),
                      breaks = seq(1000,50000, by = 5000))
 
+```
+
+```{r}
+# Body mass vs CP
+athletes_cp_stats %>%
+  ggplot(aes(x = weightkg, y = critical_power , colour = gender)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
+  scale_fill_manual(values=c("#a86826", "#006c89")) +
+  scale_colour_manual(values=c("#a86826", "#006c89")) +
+  labs(x = "Body Mass (Kg)",
+       y = "Critical Power (W)",
+       colour = "Gender") +
+  scale_y_continuous(limits = c(100,500),
+                     breaks = seq(100,500, by = 50))
+
+
+# Body mass vs W'
+athletes_cp_stats %>%
+  ggplot(aes(x = weightkg, y = w_prime , colour = gender)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
+  scale_fill_manual(values=c("#a86826", "#006c89")) +
+  scale_colour_manual(values=c("#a86826", "#006c89")) +
+  labs(x = "Body Mass (Kg)",
+       y = "W' (J)",
+       colour = "Gender") +
+  scale_y_continuous(limits = c(1000,50000),
+                     breaks = seq(1000,50000, by = 5000))
+```
+
+
+```{r}
+# Power duration plots
+
+# Take athletes filter data only if the ID exists in athletes_cp_stats
+athlete_bests <- athletes_filter[(athletes_filter$id %in% athletes_cp_stats$id),]
+
+# M and F facet plots
+
+athlete_bests %>%
+  select(id, gender,c(`1s_critical_power`:`720s_peak`)) %>%
+  dplyr::rename(
+    `1` = `1s_critical_power`,
+    `15` = `15s_critical_power`,
+    `120` = `2m_critical_power`,
+    `180` = `3m_critical_power`,
+    `240` = `5m_critical_power`,
+    `480` = `8m_critical_power`,
+    `600` = `10m_critical_power`,
+    `720` = `720s_peak`,
+    `1200` = `20m_critical_power`,
+    `1800` = `30m_critical_power`
+  ) %>%
+  pivot_longer(cols = `1`:`720`,
+               names_to = "duration",
+               values_to = "power_output") %>%
+  mutate(duration = as.numeric(duration)) %>%
+  filter(power_output > 0) %>%
+  ggplot(aes(x = duration, y = power_output, group = id)) +
+  geom_line(colour = "#f37b59",
+            stat = "smooth",
+            size = 0.5,
+            alpha = 0.1) +
+  ylim(0,2500) +
+  labs(title = "Best power-duration curve") +
+  facet_wrap(~ gender) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+```{r fig.cap = "Summary of athlete best scores for males and females}
+# Summary Table
+library(gtsummary)
+
+athletes_cp_stats %>%
+  select(gender, weightkg, `1s_critical_power`, critical_power, w_prime) %>%
+  dplyr::rename("Body Mass (Kg)" = weightkg,
+         "1s Peak Power (W)" = `1s_critical_power`,
+         "Critical Power (W)" = critical_power,
+         "W' (J)" = w_prime) %>%
+  tbl_summary(
+    by = gender,
+    missing = "no",
+    statistic = all_continuous() ~ "{mean} ({sd})") %>%
+  bold_labels()
+  
+  
 ```
 
