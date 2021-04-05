@@ -43,7 +43,7 @@ theme_set(theme_minimal())
 
 
 ```{r}
-activities_mmp <- read_csv("~/R/gc_open_data/data/activities_mmp.csv")
+activities_mmp <- read_csv("data/activities_mmp.csv")
 ```
 
 The first part of the script uses the MMP data to create a key that meets the following critera:(https://gist.github.com/mpuchowicz/3b04ee65e97a4d6c32ee577a6cd9ea31)
@@ -53,27 +53,23 @@ The first part of the script uses the MMP data to create a key that meets the fo
 3. The MMP does not have obvious outlier data based on known virtual power issues and CP model parameters
 
 ```{r}
+## I have re-organized the following because it is bad practice to
+## re-assign a variable to the same name, unless you are doing this inside a function
+
 # remove known problems. These two indicate virtual power algorithm
-
-activities_mmp <- activities_mmp %>%
+activities_mmp_filtered <- activities_mmp %>%
   filter(`1` != 2000) %>%
-  filter(`1` != 1000)
-
-# remove values outside 99.9% percentile
-activities_mmp <- activities_mmp %>%
-  filter(`1` <= quantile(activities_mmp$`1`,0.999, na.rm = TRUE)) %>%
-  filter(`180` <= quantile(activities_mmp$`180`,0.999, na.rm = TRUE)) %>%
-  filter(`420` <= quantile(activities_mmp$`420`,0.999, na.rm = TRUE)) %>%
-  filter(`720` <= quantile(activities_mmp$`720`,0.999, na.rm = TRUE)) %>%
-  filter(`1200` <= quantile(activities_mmp$`1200`,0.999, na.rm = TRUE)) 
-
-# remove spikey data
-
-activities_mmp <- activities_mmp %>%
+  filter(`1` != 1000) %>% 
+  # remove values outside 99.9% percentile
+  filter(`1` <= quantile(.$`1`,0.999, na.rm = TRUE)) %>% 
+  filter(`180` <= quantile(.$`180`,0.999, na.rm = TRUE)) %>%
+  filter(`420` <= quantile(.$`420`,0.999, na.rm = TRUE)) %>%
+  filter(`720` <= quantile(.$`720`,0.999, na.rm = TRUE)) %>%
+  filter(`1200` <= quantile(.$`1200`,0.999, na.rm = TRUE)) %>% 
+  # remove spikey data
   filter(`1` < `5`*1.3) %>%
   filter(`1` < `2`*1.2) %>%
   filter(`1` != `2`)
-
 ```
 
 The default value for format argument of as.Date function is "%Y-%m-%d" which is matching with the format of date column of df.
@@ -81,61 +77,53 @@ The default value for format argument of as.Date function is "%Y-%m-%d" which is
 Hence, df$date <- as.Date(df$date) works perfectly. (I was getting NAs by using format = "%Y-%m-%d")
 
 ```{r}
-# add a month, year and quarter columns
-activities_mmp <- activities_mmp %>%
-  mutate(date = as.Date(date)) %>%
-  mutate(month = format(date, "%m")) %>%
-  mutate(month = as.numeric(month)) %>%
-  mutate(year = format(date, "%Y")) %>%
-  mutate(year = as.numeric(year)) %>%
-  mutate(quarter = quarter(date))
+library(lubridate)
 
+# add a month, year and quarter columns
+activities_mmp_dates <- activities_mmp_filtered %>%
+  mutate(
+    date = as_date(date),
+    month = month(date),
+    year = year(date),
+    quarter = quarter(date)
+  )
 ```
 
 ```{r}
-
-library(tidyselect)
-
 # aggregrate year and quarterly bests
-athlete_years <- activities_mmp %>%
+athlete_years <- activities_mmp_dates %>%
   group_by(id, year) %>%
-  summarise(across(everything(), max))
+  summarise(across(everything(), max)) %>% 
+  ungroup()
 
-athlete_quarters <- activities_mmp %>%
+athlete_quarters <- activities_mmp_dates %>%
   group_by(id, year, quarter) %>%
-  summarise(across(everything(), max))
+  summarise(across(everything(), max)) %>% 
+  ungroup()
 
 # add count of number of yearly rides per id
-athlete_years_count <- activities_mmp %>%
+athlete_years_count <- activities_mmp_dates %>%
   group_by(id, year) %>%
-  count()
-
-# add count to athlete_years
-athlete_years <- left_join(athlete_years, athlete_years_count, by = c("id", "year"))
+  count() %>% 
+  ungroup() %>% 
+  left_join(athlete_years, .)
 
 # sum all athlete ride duration
 
-athlete_years_sum <- activities_mmp %>%
+athlete_years_sum <- activities_mmp_dates %>%
   group_by(id, year) %>%
-  summarise(across(where(is.numeric), sum))
-
-athlete_years_sum <- athlete_years_sum %>%
-  select(id, year, distance, duration) %>%
-  dplyr::rename(year_distance = distance) %>%
-  dplyr::rename(year_duration = duration)
-
-athlete_years <-left_join(x = athlete_years, y = athlete_years_sum, by = c("id", "year"))
-
-
+  summarise(across(where(is.numeric), sum)) %>% 
+  ungroup() %>% 
+  select(id, year, year_distance = distance, year_duration = duration) %>% 
+  left_join(athlete_years_count, .)
 ```
 
 ```{r}
 # get years with at least 52 rides (1 per week) & more than 120 mins total duration 
 
-full_athlete_years <- athlete_years %>%
+full_athlete_years <- athlete_years_sum %>%
   dplyr::rename(year_rides = n) %>%
-  filter(year_rides >= 52) %>%
-  filter(year_duration >=7200)
+  filter(year_rides >= 52, year_duration >= 7200)
 
 # number of records (6277)
 dim(full_athlete_years)
@@ -158,39 +146,34 @@ yearly_cp <- full_athlete_years %>%
 
 # Nest critical power trial data 
 yearly_cp_nest <- yearly_cp %>%
-  group_by(id,year) %>%
-  nest()
+  nest(data = -c(id, year))
 
 # iterate over using linear CP model
 yearly_cp_nest <- yearly_cp_nest %>%
   mutate(model = map(data, ~ lm(work_done ~ trial_duration, data = .x)))
 
 #iterate over the model with the function tidy (which puts lm output into tidy format) & unnest coeffs to extract cp & wprime into separate columns
-slopes <- yearly_cp_nest %>%
-  mutate(coefs = map(model, tidy)) %>%   
- unnest_wider(coefs) %>%
- select(id,year,estimate, std.error)
 
-# rename unnested columns and unnest std.error to get cp & wprime error
-slopes <- slopes %>%
-  unnest_wider(estimate) %>%
-  dplyr::rename(w_prime = ...1,
-                critical_power = ...2) %>%
-  unnest_wider(std.error) %>%
-  dplyr::rename(w_prime_error = ...1,
-                critical_power_error = ...2)
-
-# join with full_athlete_years dataframe
-
-full_athlete_years <- left_join(full_athlete_years, slopes,
-                                by = c("id", "year"))
-
-```
-
-```{r}
-## Remove dodgy wprime and cp values
-
-full_athlete_years <- full_athlete_years %>%
+full_athlete_years_processed <- yearly_cp_nest %>%
+  rowwise() %>% 
+  mutate(
+    coefs = broom::tidy(model) %>% list()
+  ) %>% 
+  ungroup() %>% 
+  select(id, year, coefs) %>% 
+  unnest(cols = coefs) %>% 
+  mutate(
+    term = ifelse(term == "(Intercept)", "w_prime", "critical_power")
+  ) %>% 
+  select(id:std.error) %>% 
+  pivot_longer(cols = c("estimate", "std.error")) %>% 
+  mutate(
+    term = ifelse(name == "estimate", term, paste(term, "error", sep = "_"))
+  ) %>% 
+  select(-name) %>% 
+  pivot_wider(names_from = term) %>% 
+  left_join(full_athlete_years, .) %>% 
+  ## Remove dodgy wprime and cp values
   filter(w_prime > 1000,
          w_prime < 50000) %>%
   filter(critical_power > 100,
@@ -201,7 +184,7 @@ full_athlete_years <- full_athlete_years %>%
 
 ```{r}
 ## critical power distribution
-full_athlete_years %>%
+full_athlete_years_processed %>%
   ggplot(aes(x = critical_power)) +
   geom_histogram(binwidth = 10) +
   geom_vline(aes(xintercept = mean(critical_power)),
@@ -212,7 +195,7 @@ full_athlete_years %>%
 
 ```{r}
 ## wprime distribution
-full_athlete_years %>%
+full_athlete_years_processed %>%
   ggplot(aes(x = w_prime)) +
   geom_histogram(binwidth = 1000)
 ```
@@ -220,7 +203,7 @@ full_athlete_years %>%
 ```{r}
 ## plot power duration curves?
 
-full_athlete_years %>%
+full_athlete_years_processed %>%
   select(id, year, c(`1`:`1800`)) %>%
   filter(year==2017) %>%
   pivot_longer(cols = `1`:`1800`,
@@ -242,22 +225,20 @@ full_athlete_years %>%
 # What summary statistics
 library(gtsummary)
 
-full_athlete_years %>%
-  mutate(year = format(date, "%Y")) %>%
+full_athlete_years_processed %>%
   group_by(year) %>%
   count()
 
 ## plot cp vs wprime
 
-full_athlete_years %>%
+full_athlete_years_processed %>%
   ggplot(aes(x = critical_power, y = w_prime)) +
   geom_jitter(alpha = 0.3) +
   geom_smooth(method = "lm")
 
 ## long duration vs cp
 
-full_athlete_years %>%
-  
+full_athlete_years_processed %>%
   ggplot(aes(x = duration, y = critical_power)) +
   geom_jitter(alpha = 0.3)
 
