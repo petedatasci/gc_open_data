@@ -26,7 +26,7 @@ library(stringr)
 library(lubridate)
 # library(usethis)
 # library(gitcreds)
-theme_set(theme_minimal())
+theme_set(theme_light())
 
 ```
 
@@ -44,6 +44,7 @@ theme_set(theme_minimal())
 
 ```{r}
 activities_mmp <- read_csv("~/R/gc_open_data/data/activities_mmp.csv")
+athletes <- read_csv("~/R/gc_open_data/data/athletes.csv")
 ```
 
 The first part of the script uses the MMP data to create a key that meets the following critera:(https://gist.github.com/mpuchowicz/3b04ee65e97a4d6c32ee577a6cd9ea31)
@@ -218,7 +219,7 @@ full_athlete_years %>%
 ```
 
 ```{r}
-## plot power duration curves?
+## plot power duration curves
 
 full_athlete_years %>%
   select(id, year, c(`1`:`1800`)) %>%
@@ -234,9 +235,21 @@ full_athlete_years %>%
             alpha = 0.1,
             colour = "#f37b59") +
   ylim(0,2000) +
+  labs(title = "Best yearly power-duration curve") +
   theme(axis.text.x = element_text(angle = 90, hjust = 1))
 
 ```
+
+```{r}
+install.packages("ggdist")
+library(ggdist)
+
+full_athlete_years %>%
+  ggplot(aes(x = ))
+
+```
+
+
 
 ```{r}
 # What summary statistics
