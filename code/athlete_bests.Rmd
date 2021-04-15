@@ -80,38 +80,40 @@ athletes_filter_long <- athletes_filter %>%
     work_done = duration_s * power_output)
 
 # Nest model data
-athletes_filter_long <- athletes_filter_long %>%
+athletes_nest <- athletes_filter_long %>%
   group_by(id) %>%
   nest(data = c(duration_s,power_output,work_done))
 
-athletes_cp <- athletes_filter_long %>%
+# iterate linear cp model
+athletes_model <- athletes_nest %>%
   mutate(model = map(data, ~lm(work_done ~ duration_s, data = .x)))
 
-# Retreive CP/Wprime values
-
 ## iterate over the model with the function tidy (which puts lm output into tidy format) & unnest coeffs to extract cp & wprime into separate columns
-athletes_cp <- athletes_cp %>%
-  mutate(coefs = map(model, tidy)) %>%   
- unnest_wider(coefs) %>%
-  select(-statistic, -p.value)
 
-## rename unnested columns and unnest std.error to get cp & wprime error
-athletes_cp <- athletes_cp %>%
-  unnest_wider(estimate) %>%
-  dplyr::rename(w_prime = ...1,
-                critical_power = ...2) %>%
-  unnest_wider(std.error) %>%
-  dplyr::rename(w_prime_error = ...1,
-                critical_power_error = ...2)
-
-# Filter out unlikely values
-athletes_cp <- athletes_cp %>%
-  filter(critical_power != 0) %>%
+athletes_cp <- athletes_model %>%
+  rowwise() %>% 
+  mutate(
+    coefs = broom::tidy(model) %>% list()
+  ) %>% 
+  ungroup() %>% 
+  select(id, coefs) %>% 
+  unnest(cols = coefs) %>% 
+  mutate(
+    term = ifelse(term == "(Intercept)", "w_prime", "critical_power")
+  ) %>% 
+  select(id:std.error) %>% 
+  pivot_longer(cols = c("estimate", "std.error")) %>% 
+  mutate(
+    term = ifelse(name == "estimate", term, paste(term, "error", sep = "_"))
+  ) %>% 
+  select(-name) %>% 
+  pivot_wider(names_from = term) %>% 
+  left_join(athletes_filter, .) %>% 
+  ## Remove dodgy wprime and cp values
   filter(w_prime > 1000,
          w_prime < 50000) %>%
   filter(critical_power > 100,
          critical_power < 500)
-
 ```
 
 # Data Visualisation
@@ -136,12 +138,31 @@ athletes_cp_stats <- athletes_cp %>%
          cp_wkg_mean = mean(cp_wkg),
          cp_wkg_max = max(cp_wkg)) %>%
   ungroup() %>%
-  mutate(gender_num = as.numeric(fct_rev(gender)))
+  mutate(gender_num = as.numeric(fct_rev(gender))) %>%
+  mutate(quantile = ntile(critical_power,4))
 
-athletes_cp_stats <- athletes_filter %>%
-  select(id,gender,`1s_critical_power`, `15s_critical_power`) %>%
-  left_join(athletes_cp_stats, athletes_filter, by = c("id","gender")) %>%
-  drop_na()
+# Long format
+athletes_cp_stats_long <- athletes_cp_stats %>%
+  dplyr::rename(
+    `1` = `1s_critical_power`,
+    `15` = `15s_critical_power`,
+    `120` = `2m_critical_power`,
+    `180` = `3m_critical_power`,
+    `240` = `5m_critical_power`,
+    `480` = `8m_critical_power`,
+    `600` = `10m_critical_power`,
+    `720` = `720s_peak`,
+    `1200` = `20m_critical_power`,
+    `1800` = `30m_critical_power`
+  ) %>%
+  pivot_longer(cols = `1`:`720`,
+               names_to = "duration",
+               values_to = "power_output") %>%
+  mutate(duration = as.numeric(duration))
+
+athletes_cp_stats %>%
+  group_by(gender) %>%
+  summarise(critical_power = quantile(critical_power, c(0.25, 0.5, 0.75, 0.9)))
 
 ```
 
@@ -490,31 +511,22 @@ athletes_cp_stats %>%
 ```
 
 ```{r}
-# W' vs 1s power
-athletes_cp_stats %>%
-  ggplot(aes(x = `1s_critical_power`, y = `w_prime`, colour = gender)) +
+# W' vs sprint ability
+
+athletes_cp_stats_long %>%
+  filter(duration == "1" | duration == "15" | duration == "180") %>%
+  ggplot(aes(x = power_output, y = w_prime, colour = gender)) +
   geom_point(alpha = 0.5) +
   geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
-  scale_fill_manual(values=c("#a86826", "#006c89")) +
-  scale_colour_manual(values=c("#a86826", "#006c89")) +
-  labs(x = "1s Peak Power (W)",
+  scale_fill_manual(values=c("#f03b20","#ffeda0")) +
+  scale_colour_manual(values=c("#f03b20","#ffeda0")) +
+  labs(x = "Power Output",
        y = "W' (J/kg)",
        colour = "Gender") +
   scale_y_continuous(limits = c(1000,50000),
-                     breaks = seq(1000,50000, by = 5000))
+                     breaks = seq(1000,50000, by = 5000)) +
+  facet_wrap(~ duration, scales = "free")
 
-# W' vs 15s power
-athletes_cp_stats %>%
-  ggplot(aes(x = `15s_critical_power`, y = w_prime , colour = gender)) +
-  geom_point(alpha = 0.5) +
-  geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
-  scale_fill_manual(values=c("#a86826", "#006c89")) +
-  scale_colour_manual(values=c("#a86826", "#006c89")) +
-  labs(x = "15s Peak Power (W)",
-       y = "W' (J)",
-       colour = "Gender") +
-  scale_y_continuous(limits = c(1000,50000),
-                     breaks = seq(1000,50000, by = 5000))
 
 ```
 
@@ -524,8 +536,8 @@ athletes_cp_stats %>%
   ggplot(aes(x = critical_power, y = w_prime , colour = gender)) +
   geom_point(alpha = 0.5) +
   geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
-  scale_fill_manual(values=c("#a86826", "#006c89")) +
-  scale_colour_manual(values=c("#a86826", "#006c89")) +
+  scale_fill_manual(values=c("#f03b20","#ffeda0")) +
+  scale_colour_manual(values=c("#f03b20","#ffeda0")) +
   labs(x = "Critical Power (W)",
        y = "W' (J)",
        colour = "Gender") +
@@ -533,21 +545,6 @@ athletes_cp_stats %>%
                      breaks = seq(100,500, by = 50)) +
   scale_y_continuous(limits = c(1000,50000),
                      breaks = seq(1000,50000, by = 5000))
-
-# CP vs 1s Peak Power
-athletes_cp_stats %>%
-  ggplot(aes(x = `1s_critical_power`, y = critical_power , colour = gender)) +
-  geom_point(alpha = 0.5) +
-  geom_smooth(method = "lm", alpha = 0.5, se = FALSE) +
-  scale_fill_manual(values=c("#a86826", "#006c89")) +
-  scale_colour_manual(values=c("#a86826", "#006c89")) +
-  labs(x = "1s Peak Power (W)",
-       y = "Critical Power (W)",
-       colour = "Gender") +
-  scale_y_continuous(limits = c(100,500),
-                     breaks = seq(100,500, by = 50)) +
-  scale_x_continuous(limits = c(0,2500),
-                     breaks = seq(0,2500, by = 250))
 
 ```
 
@@ -609,6 +606,14 @@ athletes_cp_stats %>%
                      breaks = seq(1000,50000, by = 5000))
 ```
 
+```{r}
+# Top 20 - still stuck
+top_20 <- athletes_cp_stats_long %>%
+  group_by(gender) %>%
+  slice_max(critical_power, n = 10) %>%
+  ungroup()
+```
+
 
 ```{r}
 # Power duration plots
@@ -616,42 +621,49 @@ athletes_cp_stats %>%
 # Take athletes filter data only if the ID exists in athletes_cp_stats
 athlete_bests <- athletes_filter[(athletes_filter$id %in% athletes_cp_stats$id),]
 
-# M and F facet plots
+  
 
-athlete_bests %>%
-  select(id, gender,c(`1s_critical_power`:`720s_peak`)) %>%
+
+athletes_cp_stats %>%
+  select(id,gender,`1s_critical_power`,`2m_critical_power`,`3m_critical_power`,`5m_critical_power`,`720s_peak`,`20m_critical_power`,critical_power) %>%
+  group_by(gender) %>%
+  slice_max(critical_power, n = 10) %>%
+  ungroup() %>%
+  arrange(gender) %>%
+  select(id, gender,c(`1s_critical_power`:`20m_critical_power`)) %>%
   dplyr::rename(
     `1` = `1s_critical_power`,
-    `15` = `15s_critical_power`,
     `120` = `2m_critical_power`,
     `180` = `3m_critical_power`,
     `240` = `5m_critical_power`,
-    `480` = `8m_critical_power`,
-    `600` = `10m_critical_power`,
     `720` = `720s_peak`,
     `1200` = `20m_critical_power`,
-    `1800` = `30m_critical_power`
   ) %>%
   pivot_longer(cols = `1`:`720`,
                names_to = "duration",
                values_to = "power_output") %>%
   mutate(duration = as.numeric(duration)) %>%
   filter(power_output > 0) %>%
-  ggplot(aes(x = duration, y = power_output, group = id)) +
-  geom_line(colour = "#f37b59",
-            stat = "smooth",
-            size = 0.5,
-            alpha = 0.1) +
+  ggplot(aes(x = duration, y = power_output,group = interaction(gender, id), colour = gender)) +
+  geom_smooth(se = FALSE, size = 1) +
+  geom_point(shape = 21, size = 4) +
+  geom_hline(yintercept = 264, linetype = "dashed", colour = "black") +
+  geom_hline(yintercept = 196, linetype = "dashed", colour = "black") +
   ylim(0,2500) +
-  labs(title = "Best power-duration curve") +
-  facet_wrap(~ gender) +
+  labs(x = "Duration (s)",
+       y = "Power Output (W)",
+       title = "Power-duration curves of top 10 males and females",
+       subtitle = "Dashed lines show median critical power for males (264 W) and females (196 W)",
+       colour = "Gender") +
   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
 ```
 
 
 ```{r fig.cap = "Summary of athlete best scores for males and females}
 # Summary Table
 library(gtsummary)
+library(gt)
 
 athletes_cp_stats %>%
   select(gender, weightkg, `1s_critical_power`, critical_power, w_prime) %>%
@@ -662,9 +674,66 @@ athletes_cp_stats %>%
   tbl_summary(
     by = gender,
     missing = "no",
-    statistic = all_continuous() ~ "{mean} ({sd})") %>%
+    statistic = all_continuous() ~ "{mean} ({sd})",
+    digits = (all_continuous() ~ 1)) %>%
   bold_labels()
+
+# By quantile (Male)
+athletes_cp_stats %>%
+  filter(gender == "M") %>%
+  select(quantile, `1s_critical_power`, critical_power, w_prime) %>%
+  dplyr::rename("1s Peak Power (W)" = `1s_critical_power`,
+         "Critical Power (W)" = critical_power,
+         "W' (J)" = w_prime) %>%
+  tbl_summary(
+    by = quantile,
+    missing = "no",
+    statistic = all_continuous() ~ "{mean} ({sd})",
+    digits = (all_continuous() ~ 1)) %>%
+  bold_labels() %>%
+  as_gt %>%
+  opt_align_table_header(align = "left") %>%
+  tab_header(title = "Table 1. Male KPIs by quartile",
+             subtitle = "Quartiles calculated by critical power")
+
+# By quantile (Female)
+athletes_cp_stats %>%
+  filter(gender == "F") %>%
+  select(quantile, `1s_critical_power`, critical_power, w_prime) %>%
+  dplyr::rename("1s Peak Power (W)" = `1s_critical_power`,
+         "Critical Power (W)" = critical_power,
+         "W' (J)" = w_prime) %>%
+  tbl_summary(
+    by = quantile,
+    missing = "no",
+    statistic = all_continuous() ~ "{mean} ({sd})",
+    digits = (all_continuous() ~ 1)) %>%
+  bold_labels() %>%
+    as_gt %>%
+  opt_align_table_header(align = "left") %>%
+  tab_header(title = "Table 2. Female KPIs by quartile",
+             subtitle = "Quartiles calculated by critical power")
   
   
+```
+
+```{r}
+top_20 %>%
+  ggplot(aes(x = critical_power, y = w_prime)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~gender, 
+             scales = "free")
+
+
+athletes_cp_stats %>%
+  count(gender) %>%
+  mutate(prop = prop.table(n)*100)
+
+
+
+
+
+
 ```
 
