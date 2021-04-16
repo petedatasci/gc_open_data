@@ -28,23 +28,28 @@ theme_set(theme_minimal())
 
 ## Read data
 ```{r}
-activities <- read_csv("~/R/gc_open_data/data/activities.csv") %>%
+activities <- read_csv("data/activities.csv") %>%
   mutate(date = as_date(date),
            year = year(date),
          quarter = quarter(date))
-  
+
+
 ```
 
 ## Filter Data
 
 ```{r}
+options(scipen = 999)
+
 # Activites per year
 activities %>%
+  filter(sport == "Bike") %>%
   ggplot(aes(x = factor(year))) +
-  geom_histogram(aes(y = ..count../sum(..count..)),binwidth = 1, stat = "count") +
+  geom_histogram(binwidth = 1, stat = "count") +
   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
   labs(title = "Activities uploaded per year",
-       x = "Year")
+       x = "Year") 
+  
 ```
 
 
@@ -102,7 +107,7 @@ cp_model <- activities_quarters_nest %>%
 
 ## iterate over the model with the function tidy (which puts lm output into tidy format) & unnest coeffs to extract cp & wprime into separate columns
 
-activities_quarters_cp <- cp_model %>%
+activities_cp <- cp_model %>%
   rowwise() %>% 
   mutate(
     coefs = broom::tidy(model) %>% list()
@@ -134,6 +139,7 @@ activities_quarters_cp <- cp_model %>%
 ## Average change in CP over time
 
 ```{r}
+# calculate % change in cp and wprime per quarter
 cp_stats <- cp_model %>%
   rowwise() %>% 
   mutate(
@@ -152,31 +158,40 @@ cp_stats <- cp_model %>%
   ) %>% 
   select(-name) %>% 
   pivot_wider(names_from = term) %>%
-# calculate % change in cp/w_prime for each quarter
+  # Filter dodgy values
+  filter(w_prime > 1000 & w_prime < 50000) %>%
+  filter(critical_power > 100 & critical_power < 500) %>%
+# calculate % change in cp/w_prime for each quarter per person
   group_by(id) %>%
   arrange(year, quarter, .by_group = TRUE) %>%
   mutate(cp_pct_change = (critical_power / lag(critical_power)-1)*100,
          w_prime_pct_change = (w_prime / lag(w_prime)-1)*100)
 
-cp_stats_filter <- cp_stats %>%
-  filter(w_prime > 1000 & w_prime < 50000) %>%
-  filter(critical_power > 100 & critical_power < 500)
-  
-  
-cp-  
+# change in cp per quarter
+cp_stats %>%
+  filter(year > 1999 & year <= 2021) %>%
   group_by(year) %>%
   summarise(avg_change = mean(cp_pct_change, na.rm = TRUE)) %>%
-  arrange(desc(avg_change))
-  
-  ggplot(aes(x = year, y = avg_change)) +
-  geom_col() +
-  scale_x_continuous(limits = c(2000,2020),
-                     breaks = seq(2000,2020, by = 1)) +
-  scale_y_continuous(limits = c(-10,100),
-                     breaks = seq(-10,100, by = 10))
+  arrange(avg_change) %>%
+  ggplot(aes(x = factor(year), y = avg_change)) +
+  geom_col(fill = "#f03b20", alpha = 0.5) +
+  labs(title = "Average percent change in critical power per quarter",
+       x = NULL,
+       y = NULL)
 
-  
-  
-  
+# change in wprime per quarter
+cp_stats %>%
+  filter(year > 1999 & year <= 2021) %>%
+  group_by(year) %>%
+  summarise(avg_change = mean(w_prime_pct_change, na.rm = TRUE)) %>%
+  arrange(avg_change) %>%
+  ggplot(aes(x = factor(year), y = avg_change)) +
+  geom_col(fill = "#f03b20", alpha = 0.5) +
+  labs(title = "Average percent change in W' per quarter",
+       x = NULL,
+       y = NULL)
+
+# individual change over time
+
 ```
 
