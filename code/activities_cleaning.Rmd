@@ -1,0 +1,153 @@
+---
+title: "Athlete Activities Cleaning"
+author: "Peter Bonner"
+date: "15/04/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, warning = FALSE,
+                      message = FALSE,echo = TRUE, dpi = 180,
+                      fig.width = 8, fig.height = 5)
+
+
+```
+
+## Libraries
+```{r}
+library(tidyverse)
+library(readr)
+library(janitor)
+library(readxl)
+library(lubridate)
+theme_set(theme_minimal())
+
+```
+
+## Read data
+```{r}
+activities <- read_csv("data/activities.csv") %>%
+  mutate(date = as_date(date),
+           year = year(date),
+         quarter = quarter(date))
+
+```
+
+## Filter Data
+
+```{r}
+options(scipen = 999)
+
+# Activites per year
+activities %>%
+  filter(sport == "Bike") %>%
+  ggplot(aes(x = factor(year))) +
+  geom_histogram(binwidth = 1, stat = "count") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Activities uploaded per year",
+       x = "Year") 
+  
+```
+
+
+```{r}
+activities_filtered <- activities %>%
+  # keep only bike activities
+  filter(sport == "Bike") %>%
+  # 2015 onwards - more accessible and reliable power meters on bikes
+  filter(year >= 2015) %>%
+  # standard for research
+  filter(age >= 18 & age <= 60) %>%
+  # indicate virtual power algorithm
+  filter(`1s_critical_power` != 2000,
+         `1s_critical_power` != 1000) %>%
+  # remove absolute power values above 99th percentile for both genders
+  pivot_longer(cols = `1s_critical_power`:`30m_critical_power`,
+               names_to = "duration_s",
+               values_to = "power_output") %>%
+  group_by(gender,duration_s) %>%
+  mutate(row = row_number()) %>%
+  filter(power_output <= quantile(power_output, 0.99, na.rm = TRUE)) %>%
+  pivot_wider(names_from = duration_s,
+              values_from = power_output) %>%
+  select(-row) %>%
+  ungroup()
+         
+```
+
+## Quarterly best MMPs
+
+```{r}
+# Extract best MMP values for each quarter per year 
+activities_quarters <- activities_filtered %>%
+  group_by(id,year,quarter) %>%
+  summarise(across(c(`3m_critical_power`:`10m_critical_power`), max))
+```
+
+
+# Critical power model
+
+```{r}
+library(tidymodels)
+# Convert to long format
+activities_quarters_long <- activities_quarters %>%
+  dplyr::rename(`180` = `3m_critical_power`,
+                `300` = `5m_critical_power`,
+                `480` = `8m_critical_power`,
+                `600` = `10m_critical_power`) %>%
+  pivot_longer(`180`:`600`, names_to = "duration_s", values_to = "power_output") %>%
+  mutate(duration_s = as.numeric(duration_s),
+    work_done = duration_s * power_output) %>%
+  drop_na()
+
+# Nest model data 
+activities_quarters_nest <- activities_quarters_long %>%
+  group_by(id,year,quarter) %>%
+  nest(data = c(duration_s,power_output,work_done))
+
+# iterate linear cp model
+cp_model <- activities_quarters_nest %>%
+  mutate(model = map(data, ~lm(work_done ~ duration_s, data = .x)))
+
+## iterate over the model with the function tidy (which puts lm output into tidy format) & unnest coeffs to extract cp & wprime into separate columns
+
+activities_cp <- cp_model %>%
+  rowwise() %>% 
+  mutate(
+    coefs = broom::tidy(model) %>% list()
+  ) %>% 
+  ungroup() %>% 
+  select(id, year,quarter,coefs) %>% 
+  unnest(cols = coefs) %>% 
+  mutate(
+    term = ifelse(term == "(Intercept)", "w_prime", "critical_power")
+  ) %>% 
+  select(id:std.error) %>% 
+  pivot_longer(cols = c("estimate", "std.error")) %>% 
+  mutate(
+    term = ifelse(name == "estimate", term, paste(term, "error", sep = "_"))
+  ) %>% 
+  select(-name) %>% 
+  pivot_wider(names_from = term) %>% 
+  left_join(x = activities_filtered, 
+            y = .,
+            by = c("id", "year","quarter")) %>% 
+  ## Remove dodgy wprime and cp values
+  filter(w_prime > 1000,
+         w_prime < 50000) %>%
+  filter(critical_power > 100,
+         critical_power < 500)
+
+```
+
+## Write to rds file
+```{r}
+write_rds(x = activities_cp,
+          file = "data/activities_cp.csv")
+```
+
+
+
+
