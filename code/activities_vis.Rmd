@@ -1,0 +1,87 @@
+---
+title: "Activities CP - Vis and Analysis"
+author: "Peter Bonner"
+date: "19/04/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, warning = FALSE,
+                      message = FALSE,echo = TRUE, dpi = 180,
+                      fig.width = 8, fig.height = 5)
+
+
+```
+
+```{r}
+library(tidyverse)
+library(readr)
+library(janitor)
+library(readxl)
+library(lubridate)
+theme_set(theme_minimal())
+```
+
+
+## Read in activities data
+```{r}
+activities_cp <- read_rds("~/R/gc_open_data/data/activities_cp.csv") %>%
+  relocate(year:`30m_critical_power`,
+           .after = where(is.character)) %>%
+  select(-X34)
+
+
+```
+
+# Average training values per quarter
+```{r}
+quarter_averages <- activities_cp %>%
+  mutate(year = as.factor(year)) %>%
+  group_by(id,year,quarter) %>%
+  summarise(mean_cp = mean(critical_power)) %>%
+  ungroup()
+
+```
+
+
+
+
+
+
+
+## Average change in CP over time
+
+```{r}
+cp_stats <- activities_cp
+# calculate % change in cp/w_prime for each quarter per person
+  group_by(id) %>%
+  arrange(year, quarter, .by_group = TRUE) %>%
+  mutate(cp_pct_change = (critical_power / lag(critical_power)-1)*100,
+         w_prime_pct_change = (w_prime / lag(w_prime)-1)*100)
+
+# change in cp per quarter
+cp_stats %>%
+  filter(year > 1999 & year <= 2021) %>%
+  group_by(year) %>%
+  summarise(avg_change = mean(cp_pct_change, na.rm = TRUE)) %>%
+  arrange(avg_change) %>%
+  ggplot(aes(x = factor(year), y = avg_change)) +
+  geom_col(fill = "#f03b20", alpha = 0.5) +
+  labs(title = "Average percent change in critical power per quarter",
+       x = NULL,
+       y = NULL)
+
+# change in wprime per quarter
+cp_stats %>%
+  filter(year > 1999 & year <= 2021) %>%
+  group_by(year) %>%
+  summarise(avg_change = mean(w_prime_pct_change, na.rm = TRUE)) %>%
+  arrange(avg_change) %>%
+  ggplot(aes(x = factor(year), y = avg_change)) +
+  geom_col(fill = "#f03b20", alpha = 0.5) +
+  labs(title = "Average percent change in W' per quarter",
+       x = NULL,
+       y = NULL)
+
+```
