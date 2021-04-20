@@ -3,6 +3,8 @@ title: "Activities CP - Vis and Analysis"
 author: "Peter Bonner"
 date: "19/04/2021"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 
@@ -21,6 +23,9 @@ library(janitor)
 library(readxl)
 library(lubridate)
 theme_set(theme_minimal())
+library(GGally)
+
+options(scipen = 999)
 ```
 
 
@@ -29,22 +34,77 @@ theme_set(theme_minimal())
 activities_cp <- read_rds("~/R/gc_open_data/data/activities_cp.csv") %>%
   relocate(year:`30m_critical_power`,
            .after = where(is.character)) %>%
+  mutate(year = as.factor(year)) %>%
   select(-X34)
 
 
 ```
 
-# Average training values per quarter
+# Training metrics by quarter
+
 ```{r}
+# Quarterly totals for volume measures
+quarter_totals <- activities_cp %>%
+  mutate(year = as.factor(year)) %>%
+  group_by(id,year,quarter) %>%
+  summarise(across(c("workout_time","total_distance","elevation_gain","total_work"), ~ sum(.x, na.rm = TRUE),.names = "total_{.col}"),.groups = "keep")
+
+# quarter averages for intensity measures
 quarter_averages <- activities_cp %>%
   mutate(year = as.factor(year)) %>%
   group_by(id,year,quarter) %>%
-  summarise(mean_cp = mean(critical_power)) %>%
+  summarise(across(c(average_speed:coggan_tss), ~ mean(.x, na.rm = TRUE),.names = "average_{.col}"),.groups = "keep") %>%
   ungroup()
 
+# join tibbles 
+quarter_joined <- quarter_totals %>%
+  full_join(quarter_averages)
+
+activities_cp_trim <- activities_cp %>%
+  select(id,year,quarter, gender,critical_power,w_prime,critical_power_error,w_prime_error) %>%
+  unique()
+  
+  
+quarter_metrics <- quarter_joined %>%
+  full_join(activities_cp_trim, by = c("id","year","quarter"))
+  
 ```
 
 
+
+# Training metrics vs CP
+```{r}
+# Training duration
+quarter_metrics %>%
+  filter(total_workout_time <= 1000000) %>%
+  ggplot(aes(x = total_workout_time, y = critical_power)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm",colour = "blue")
+
+# Training distance
+quarter_metrics %>%
+  filter(total_total_distance >0 & total_total_distance <= 20000) %>%
+  ggplot(aes(x = total_total_distance, y = critical_power)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm",colour = "blue")
+
+# Average power 
+quarter_metrics %>%
+    ggplot(aes(x = average_average_power, y = critical_power)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm",colour = "blue")
+
+# Average HR
+quarter_metrics %>%
+  filter(average_average_hr > 50) %>%
+  ggplot(aes(x = average_average_hr, y = critical_power)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm",colour = "blue")
+```
+
+```{r}
+
+```
 
 
 
