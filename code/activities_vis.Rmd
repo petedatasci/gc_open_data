@@ -24,6 +24,7 @@ library(readxl)
 library(lubridate)
 theme_set(theme_minimal())
 library(GGally)
+library(broom)
 
 options(scipen = 999)
 ```
@@ -31,7 +32,7 @@ options(scipen = 999)
 
 ## Read in activities data
 ```{r}
-activities_cp <- read_rds("~/R/gc_open_data/data/activities_cp.csv") %>%
+activities_cp <- read_rds("~/R/gc_open_data/data/activities_cp.rds") %>%
   relocate(year:`30m_critical_power`,
            .after = where(is.character)) %>%
   mutate(year = as.factor(year)) %>%
@@ -47,7 +48,7 @@ activities_cp <- read_rds("~/R/gc_open_data/data/activities_cp.csv") %>%
 quarter_totals <- activities_cp %>%
   mutate(year = as.factor(year)) %>%
   group_by(id,year,quarter) %>%
-  summarise(across(c("workout_time","total_distance","elevation_gain","total_work"), ~ sum(.x, na.rm = TRUE),.names = "total_{.col}"),.groups = "keep")
+  summarise(across(c("workout_time_min","total_distance","elevation_gain","total_work"), ~ sum(.x, na.rm = TRUE),.names = "total_{.col}"),.groups = "keep")
 
 # quarter averages for intensity measures
 quarter_averages <- activities_cp %>%
@@ -61,14 +62,69 @@ quarter_joined <- quarter_totals %>%
   full_join(quarter_averages)
 
 activities_cp_trim <- activities_cp %>%
-  select(id,year,quarter, gender,critical_power,w_prime,critical_power_error,w_prime_error) %>%
+  select(id,age,year,quarter, gender,critical_power,w_prime,critical_power_error,w_prime_error) %>%
   unique()
   
-  
-quarter_metrics <- quarter_joined %>%
-  full_join(activities_cp_trim, by = c("id","year","quarter"))
+activity_metrics <- activities_cp_trim %>%
+  full_join(quarter_joined, by = c("id","year","quarter"))
   
 ```
+
+# Dimensionality reduction: Principle component analysis
+
+```{r}
+pca_fit <- activity_metrics %>%
+  select(where(is.numeric)) %>% # retain nymeric columns
+  drop_na() %>% # need to remove all Na values
+  scale() %>% # scale to zero mean and unit variance
+  prcomp() # do PCA
+
+
+arrow_style <- arrow(
+  angle = 20, length = grid::unit(4, "pt"),
+  ends = "first", type = "closed"
+)
+
+pca_fit %>%
+  # extract rotation matrix
+  tidy(matrix = "rotation") %>%
+  pivot_wider(
+    names_from = "PC", values_from = "value",
+    names_prefix = "PC"
+  ) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_segment(
+    xend = 0, yend = 0,
+    arrow = arrow_style
+  ) +
+  geom_text(aes(label = column),hjust = 1) +
+  xlim(-1.5,0.5) +
+  ylim(-1,1) +
+  coord_fixed()
+
+```
+
+```{r}
+pca_fit %>%
+  # extract eigenvalues
+  tidy(matrix = "eigenvalues") %>%
+  ggplot(aes(PC, percent)) +
+  geom_col() +
+  scale_x_continuous(
+    # create one axis tick per PC
+    breaks = 1:18
+  ) +
+  scale_y_continuous(
+    name = "variance explained",
+    # format y axis ticks as percent values
+    label = scales::label_percent(accuracy = 1)
+  )
+```
+
+
+
+
+
 
 
 
