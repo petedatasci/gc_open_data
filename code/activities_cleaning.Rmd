@@ -28,10 +28,14 @@ theme_set(theme_minimal())
 
 ## Read data
 ```{r}
-activities <- read_csv("data/activities.csv") %>%
+activities <- read_csv("data/activities.csv")
+
+# Add additional variables
+activities_var <- activities %>%
   mutate(date = as_date(date),
            year = year(date),
-         quarter = quarter(date))
+         quarter = quarter(date)) %>%
+  mutate(workout_time_min = workout_time/60)
 
 ```
 
@@ -40,7 +44,7 @@ activities <- read_csv("data/activities.csv") %>%
 ```{r}
 options(scipen = 999)
 
-# Activites per year
+# View number of uploaded activites per year
 activities %>%
   filter(sport == "Bike") %>%
   ggplot(aes(x = factor(year))) +
@@ -53,13 +57,17 @@ activities %>%
 
 
 ```{r}
-activities_filtered <- activities %>%
+activities_filtered <- activities_var %>%
   # keep only bike activities
   filter(sport == "Bike") %>%
-  # 2015 onwards - more accessible and reliable power meters on bikes
+  # 2015 onwards - more accessible and reliable power meters on bikes & increase in uploads
   filter(year >= 2015) %>%
   # standard for research
   filter(age >= 18 & age <= 60) %>%
+  # remove workout_time less than 10 seconds and more than 12 hours
+  filter(workout_time >= 10 & workout_time <= 43200) %>%
+  # remove speed > 65 kph (pro cyclist max sprint speed)
+  filter(average_speed <= 65) %>%
   # indicate virtual power algorithm
   filter(`1s_critical_power` != 2000,
          `1s_critical_power` != 1000) %>%
@@ -74,6 +82,7 @@ activities_filtered <- activities %>%
               values_from = power_output) %>%
   select(-row) %>%
   ungroup()
+
          
 ```
 
@@ -83,7 +92,9 @@ activities_filtered <- activities %>%
 # Extract best MMP values for each quarter per year 
 activities_quarters <- activities_filtered %>%
   group_by(id,year,quarter) %>%
-  summarise(across(c(`3m_critical_power`:`10m_critical_power`), max))
+  summarise(across(c(`3m_critical_power`:`10m_critical_power`), max),.groups = "keep")
+
+# Bring back age and gender
 ```
 
 
@@ -142,10 +153,14 @@ activities_cp <- cp_model %>%
 
 ```
 
+```{r}
+summary(activities_cp)
+```
+
 ## Write to rds file
 ```{r}
 write_rds(x = activities_cp,
-          file = "data/activities_cp.csv")
+          file = "data/activities_cp.rds")
 ```
 
 
