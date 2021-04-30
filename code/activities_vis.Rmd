@@ -73,8 +73,158 @@ activity_metrics <- activities_cp_trim %>%
 # Dimensionality reduction: Principle component analysis
 
 ```{r}
+# Method 1 - tidy models (AH)
+library(tidymodels)
+
+pca_df <- activity_metrics %>%
+  mutate(quarter = as.factor(quarter)) %>%
+  mutate(cp_quantile = ntile(critical_power,4)) %>%
+  select(-id,-year,-quarter,-critical_power,-w_prime,-critical_power_error,-w_prime_error)
+
+pca_recipe <- recipe(~ ., data = pca_df) %>%
+  update_role(gender,cp_quantile, new_role = "id") %>%
+  step_naomit(all_predictors()) %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors(), num_comp = 6, id = "pca")
+  
+pca_prep <- prep(pca_recipe)
+
+cycling_pca <- pca_prep %>%
+  tidy(id = "pca")
+
+cycling_pca
+
+bake(pca_prep, new_data = NULL)
+
+```
+
+```{r}
+# bake recipe
+
+bake(pca_prep, new_data = NULL)
+```
+
+
+We can also apply the `recipes::tidy()` method to the output from `recipes::step_pca()` to examine how much variance each component accounts for:
+
+```{r}
+pca_prep %>%
+  tidy(id = "pca", type = "variance") %>%
+  filter(terms == "percent variance") %>%
+  ggplot(aes(x = component, y = value)) +
+  geom_col(fill = "#b6dfe2") + 
+  xlim(c(0, 10)) + 
+  ylab("% of total variance")
+```
+
+We can plot these loadings by principal component too, following Julia Silge’s example:
+
+```{r}
+# Plot loadings
+
+cycling_pca %>%
+    mutate(terms = tidytext::reorder_within(terms, 
+                                          abs(value), 
+                                          component)) %>%
+  ggplot(aes(abs(value), terms, fill = value > 0)) +
+  geom_col() +
+  facet_wrap(~component, scales = "free_y") +
+  tidytext::scale_y_reordered() +
+  scale_fill_manual(values = c("#b6dfe2", "#0A537D")) +
+  labs(
+    x = "Absolute value of contribution",
+    y = NULL, fill = "Positive?"
+  ) 
+```
+
+### Plot PCA loadings + scores
+We have the PCA loadings in `cycling_pca`. But we need them in a wide format now for plotting.
+
+```{r}
+# get pca loadings into wider format
+pca_wider <- cycling_pca %>% 
+  tidyr::pivot_wider(names_from = component, id_cols = terms)
+```
+
+We also need to go back to our prepped cycling recipe, `pca_prep`, and `recipes::juice()` it to get the PCA scores back.
+
+```{r}
+library(ggrepel)
+#PCA 1 vs PCA 2
+# define arrow style
+arrow_style <- arrow(
+  angle = 20, length = grid::unit(8, "pt"),
+  ends = "first", type = "closed"
+)
+
+pca_plot <-
+  bake(pca_prep, new_data = NULL) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(colour = factor(cp_quantile), shape = factor(cp_quantile)), 
+             #alpha = 0.4, 
+             size = 2) +
+  scale_colour_manual(values = c("darkorange","purple","cyan4","midnightblue")) +
+  scale_shape(solid = FALSE)
+
+pca_plot +
+  geom_segment(data = pca_wider,
+               aes(xend = PC1, yend = PC2), 
+               x = 0, 
+               y = 0, 
+               arrow = arrow_style) + 
+  geom_text_repel(data = pca_wider,
+            aes(x = PC1, y = PC2, label = terms), 
+            xlim = c(-Inf, Inf), ylim = c(-Inf, Inf),
+            size = 5, 
+            color = "black") 
+
+pca_plot
+
+# PCA 1 vs PCA 3
+pca_plot_2 <-
+  bake(pca_prep, new_data = NULL) %>%
+  ggplot(aes(PC1, PC3)) +
+  geom_point(aes(colour = factor(cp_quantile), shape = factor(cp_quantile)), 
+             #alpha = 0.4, 
+             size = 2) +
+  scale_colour_manual(values = c("darkorange","purple","cyan4","midnightblue")) +
+  scale_shape(solid = FALSE)
+
+pca_plot_2 +
+  geom_segment(data = pca_wider,
+               aes(xend = PC1, yend = PC3), 
+               x = 0, 
+               y = 0, 
+               arrow = arrow_style) + 
+  geom_text_repel(data = pca_wider,
+            aes(x = PC1, y = PC3, label = terms), 
+            xlim = c(-Inf, Inf), ylim = c(-Inf, Inf),
+            size = 5, 
+            color = "black") 
+```
+
+
+
+
+
+
+
+# Julia Silge
+```{r}
+# output
+
+bake(pca_prep, new_data = NULL)
+
+bake(pca_prep,new_data = NULL) %>% # normally would use testing data, but only using on this data set so set to null
+  ggplot(aes(PC1,PC2)) +
+  geom_point(colour = "midnightblue", alpha = 0.7, size = 2)
+```
+
+
+```{r}
+# Method 2
 pca_fit <- activity_metrics %>%
-  select(where(is.numeric)) %>% # retain nymeric columns
+  select(where(is.numeric)) %>% # retain numeric columns
   drop_na() %>% # need to remove all Na values
   scale() %>% # scale to zero mean and unit variance
   prcomp() # do PCA
