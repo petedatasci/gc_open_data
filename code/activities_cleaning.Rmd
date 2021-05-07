@@ -34,7 +34,8 @@ activities <- read_csv("data/activities.csv")
 activities_var <- activities %>%
   mutate(date = as_date(date),
            year = year(date),
-         quarter = quarter(date)) %>%
+         quarter = quarter(date),
+         week = week(date)) %>%
   mutate(workout_time_min = workout_time/60)
 
 ```
