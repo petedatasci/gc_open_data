@@ -22,64 +22,230 @@ library(readr)
 library(janitor)
 library(readxl)
 library(lubridate)
-theme_set(theme_minimal())
 library(GGally)
 library(broom)
+library(caret)
+library(tidymodels)
+library(vip)
+library(car)
+library(mctest)
 
+theme_set(theme_minimal())
 options(scipen = 999)
 ```
 
 
 ## Read in activities data
 ```{r}
-activities_cp <- read_rds("~/R/gc_open_data/data/activities_cp.rds") %>%
+rides <- read_rds("~/R/gc_open_data/data/activities_cp.rds") %>%
   relocate(year:`30m_critical_power`,
            .after = where(is.character)) %>%
   mutate(year = as.factor(year)) %>%
+  mutate(pwr_hr_ratio = average_power / average_hr) %>%
   select(-X34)
 
 
 ```
 
-# Training metrics by quarter
 
+## Training metrics by week
+
+Summarise training metrics by weekly total or weekly average.
 ```{r}
-# Quarterly totals for volume measures
-quarter_totals <- activities_cp %>%
-  mutate(year = as.factor(year)) %>%
-  group_by(id,year,quarter) %>%
-  summarise(across(c("workout_time_min","total_distance","elevation_gain","total_work"), ~ sum(.x, na.rm = TRUE),.names = "total_{.col}"),.groups = "keep")
 
-# quarter averages for intensity measures
-quarter_averages <- activities_cp %>%
-  mutate(year = as.factor(year)) %>%
-  group_by(id,year,quarter) %>%
-  summarise(across(c(average_speed:coggan_tss), ~ mean(.x, na.rm = TRUE),.names = "average_{.col}"),.groups = "keep") %>%
+# Weekly training metrics
+week_total_volume <- rides %>%
+  group_by(id,year,quarter,week) %>%
+  summarise(across(c("workout_time_min","total_distance","elevation_gain","total_work", "coggan_tss"), ~sum(.x, na.rm = TRUE),.names = "week_{.col}"),.groups = "keep") %>%
+  dplyr::rename(week_total_workout_time = week_workout_time_min,
+                week_total_elevation_gain = week_elevation_gain,
+                week_total_tss = week_coggan_tss) %>%
   ungroup()
 
-# join tibbles 
-quarter_joined <- quarter_totals %>%
-  full_join(quarter_averages)
+week_avg_int <- rides %>%
+  # calculate relative session intensity
+  mutate(relative_intensity = average_power / critical_power) %>%
+  # calculate weekly averages
+  group_by(id,year,quarter,week) %>%
+  summarise(across(c(average_speed:coggan_if,relative_intensity,pwr_hr_ratio), ~ mean(.x, na.rm = TRUE),.names = "week_{.col}"),.groups = "keep") %>%
+  ungroup()
+  
+weekly_metrics <-full_join(week_total_volume, week_avg_int, by = c("id", "year", "quarter", "week"))
 
-activities_cp_trim <- activities_cp %>%
+```
+
+## Training metrics by quarter
+
+Summarise weekly averages/totals by calculating the average per quarter. E.g. average weekly training hours per 3 month period.
+```{r}
+quarter_metrics <- weekly_metrics %>%
+  group_by(id,year,quarter) %>%
+  summarise(across(c(week_total_workout_time:week_pwr_hr_ratio), ~ mean(.x, na.rm = TRUE)),.groups = "keep") %>%
+  ungroup()
+
+# join with cp metrics
+cp_metrics <- rides %>%
   select(id,age,year,quarter, gender,critical_power,w_prime,critical_power_error,w_prime_error) %>%
   unique()
-  
-activity_metrics <- activities_cp_trim %>%
-  full_join(quarter_joined, by = c("id","year","quarter"))
-  
+
+ride_metrics <- full_join(quarter_metrics, cp_metrics, by = c("id","year","quarter"))
+
+
 ```
+
+
+```{r}
+# # Quarterly totals for volume measures
+# quart_avg_vol <- weekly_metrics %>%
+#   group_by(id,year,quarter) %>%
+#   summarise(across(c("week_total_workout_time","week_total_distance","week_total_elevation_gain","week_total_work", "week_total_tss"), ~ sum(.x, na.rm = TRUE)),.groups = "keep")
+# 
+# # quarter averages for intensity measures
+# quart_avg_int <- weekly_metrics %>%
+#   group_by(id,year,quarter) %>%
+#   summarise(across(c(week_average_speed:week_coggan_if,week_relative_intensity), ~ mean(.x, na.rm = TRUE)),.groups = "keep") %>%
+#   ungroup()
+```
+
+## Quarterly Visuals
+```{r}
+# TSS
+weekly_metrics %>%
+  group_by(id) %>%
+  summarise(average_tss = mean(week_total_tss)) %>%
+  filter(average_tss >=100 & average_tss <= 1500) %>%
+  ggplot(aes(x = average_tss, y = ..density..)) +
+  geom_histogram(binwidth = 25, colour = "#e9ecef" ,fill = "#006c89") +
+  scale_x_continuous(limits = c(100,1500),
+                     breaks = seq(100,1500, by = 100)) +
+  labs(
+    title = "Average weekly TSS",
+    x = NULL
+  )
+
+# Relative Intensity
+weekly_metrics %>%
+  group_by(id) %>%
+  summarise(average_relative_intensity = mean(week_relative_intensity)) %>%
+  ggplot(aes(x = average_relative_intensity, y = ..density..,)) +
+  geom_histogram(binwidth = 0.05, colour = "#e9ecef" ,fill = "#006c89") +
+  scale_x_continuous(limits = c(0.2,1.2),
+                     breaks = seq(0.2,1.2, by = 0.05)) +
+  labs(title = "Average weekly relative intensity",
+    x = NULL)
+
+# Hours
+weekly_metrics %>%
+  group_by(id) %>%
+  summarise(average_weekly_hours = mean(week_total_workout_time)) %>%
+  filter(average_weekly_hours <= 2400) %>% 
+  ggplot(aes(x = average_weekly_hours, y = ..density..,)) +
+  geom_histogram(binwidth = 30, colour = "#e9ecef" ,fill = "#006c89") +
+  scale_x_continuous(limits = c(0,2400),
+                     breaks = seq(0,2400, by = 100)) +
+  labs(title = "Average weekly minutes of training",
+    x = NULL)
+
+```
+
+## Create a linear model
+```{r}
+
+# Create a split object
+set.seed(2021)
+
+ride_split <- ride_metrics %>%
+  select(-id,-quarter,-year,-gender,-w_prime_error, -critical_power_error,-w_prime, -week_total_work,-week_total_distance) %>%
+  initial_split()
+
+ride_training <- ride_split %>%
+  training()
+
+ride_test <- ride_split %>%
+  testing()
+```
+
+`week_total_work` and `week_total_distance` removed due to collinearity: Variance inflation factor > 10 is problematic (Book et al., 2001,2012,2017).
+
+```{r}
+# Create model
+model <- linear_reg() %>%
+  set_engine("lm") %>%  # adds lm implementation of linear regression
+  set_mode("regression")
+
+# Fitting to training data
+
+model_fit <- model %>%
+  fit(critical_power ~., data = ride_training)
+```
+
+## Evaluate model
+```{r}
+## View model_fit properties
+model_fit
+
+names(model_fit)
+
+summary(model_fit$fit)
+
+```
+
+```{r}
+# Cor matrix
+library(corrplot)
+cor1 <- cor(ride_training)
+corrplot.mixed(cor1, lower.col = "black", numeber.cex = .7)
+
+# Check multicollinearity with variance inflation factor (VIF)
+vif_values <- car::vif(model_fit$fit)
+vif_values
+
+mc.plot(model_fit$fit, Inter = TRUE)
+
+```
+
+```{r}
+# Diagnostic plots
+
+par(mfrow=c(2,2))
+
+plot(model_fit$fit,
+     pch = 16,  # optional parameters to make points blue
+     col = '#006EA1')
+
+```
+
+Diagnostic plots:
+* Q-Q plot suggests that the data have more extreme values than would be expected from data that was normally distributed.
+* Residuals vs Fitted - suggests that the relationship may be non-linear (quadratic in nature?)
+  * may be missing higher order variable to explain the pattern/missing variables/missing interaction between terms in the current model
+
+
+```{r}
+# Tidy training results
+
+## df of estimated coefficients
+tidy(model_fit)
+
+# Performance metrics on training data
+glance(model_fit)
+```
+
+```{r}
+# variable importance
+vip(model_fit, num_features = 15)
+```
+
+
 
 # Dimensionality reduction: Principle component analysis
 
 ```{r}
 # Method 1 - tidy models (AH)
-library(tidymodels)
-
-pca_df <- activity_metrics %>%
+pca_df <- ride_metrics %>%
   mutate(quarter = as.factor(quarter)) %>%
   mutate(cp_quantile = ntile(critical_power,4)) %>%
-  select(-id,-year,-quarter,-critical_power,-w_prime,-critical_power_error,-w_prime_error)
+  select(-id,-year,-quarter,-critical_power,-w_prime,-critical_power_error,-w_prime_error,-week_total_work,-week_total_distance)
 
 pca_recipe <- recipe(~ ., data = pca_df) %>%
   update_role(gender,cp_quantile, new_role = "id") %>%
@@ -93,8 +259,6 @@ cycling_pca <- pca_prep %>%
   tidy(id = "pca")
 
 cycling_pca
-
-bake(pca_prep, new_data = NULL)
 
 ```
 
@@ -135,7 +299,52 @@ cycling_pca %>%
     x = "Absolute value of contribution",
     y = NULL, fill = "Positive?"
   ) 
+
+
+# PC1 bar chart - 10000 ft
+
+cycling_pca %>% 
+    filter(component %in% paste0("PC", 1:6)) %>%
+    ggplot(aes(terms, value, fill = terms)) +
+    geom_col(show.legend = FALSE, alpha = 0.8) +
+    theme(axis.text.x = element_blank(), 
+          axis.ticks.x = element_blank(),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank()) + 
+    labs(x = "Ride metrics",
+         y = "Relative importance in each principal component") +
+    facet_wrap(~ component, ncol = 2)
+
+# PC1 bar chart
+cycling_pca %>%
+  filter(component == "PC1") %>%
+  top_n(14, abs(value)) %>%
+  mutate(terms = reorder(terms, value)) %>%
+  ggplot(aes(terms, value, fill = terms)) +
+  geom_col(show.legend = FALSE, alpha = 0.8) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        axis.ticks.x = element_blank()) + 
+  labs(x = "Ride Metrics",
+       y = "Relative importance in principle component")
+
 ```
+
+```{r}
+# PC2 bar chart
+cycling_pca %>%
+  filter(component == "PC2") %>%
+  top_n(14, abs(value)) %>%
+  mutate(terms = reorder(terms, value)) %>%
+  ggplot(aes(terms, value, fill = terms)) +
+  geom_col(show.legend = FALSE, alpha = 0.8) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        axis.ticks.x = element_blank()) + 
+  labs(x = "Ride Metrics",
+       y = "Relative importance in principle component")
+```
+
+
+
 
 ### Plot PCA loadings + scores
 We have the PCA loadings in `cycling_pca`. But we need them in a wide format now for plotting.
@@ -148,6 +357,7 @@ pca_wider <- cycling_pca %>%
 
 We also need to go back to our prepped cycling recipe, `pca_prep`, and `recipes::juice()` it to get the PCA scores back.
 
+## PCA Plots coloured by CP Quarile
 ```{r}
 library(ggrepel)
 #PCA 1 vs PCA 2
@@ -201,76 +411,63 @@ pca_plot_2 +
             xlim = c(-Inf, Inf), ylim = c(-Inf, Inf),
             size = 5, 
             color = "black") 
+
+pca_plot2
 ```
 
-
-
-
-
-
-
-# Julia Silge
-```{r}
-# output
-
-bake(pca_prep, new_data = NULL)
-
-bake(pca_prep,new_data = NULL) %>% # normally would use testing data, but only using on this data set so set to null
-  ggplot(aes(PC1,PC2)) +
-  geom_point(colour = "midnightblue", alpha = 0.7, size = 2)
-```
-
+## PCA Plots not coloured
 
 ```{r}
-# Method 2
-pca_fit <- activity_metrics %>%
-  select(where(is.numeric)) %>% # retain numeric columns
-  drop_na() %>% # need to remove all Na values
-  scale() %>% # scale to zero mean and unit variance
-  prcomp() # do PCA
-
-
-arrow_style <- arrow(
-  angle = 20, length = grid::unit(4, "pt"),
-  ends = "first", type = "closed"
-)
-
-pca_fit %>%
-  # extract rotation matrix
-  tidy(matrix = "rotation") %>%
-  pivot_wider(
-    names_from = "PC", values_from = "value",
-    names_prefix = "PC"
-  ) %>%
+bake(pca_prep, new_data = NULL) %>%
   ggplot(aes(PC1, PC2)) +
-  geom_segment(
-    xend = 0, yend = 0,
-    arrow = arrow_style
-  ) +
-  geom_text(aes(label = column),hjust = 1) +
-  xlim(-1.5,0.5) +
-  ylim(-1,1) +
-  coord_fixed()
-
+  geom_point(size = 1.3, colour = "midnightblue", alpha = 0.1)
+  
+bake(pca_prep, new_data = NULL) %>%
+  ggplot(aes(PC1, PC3)) +
+  geom_point(size = 1.3, colour = "midnightblue", alpha = 0.1)
+  
 ```
+
+
+# Clustering
+
+DBscan:
+* eps: Reachability maximum distance
+* MinPts: Reachability minimum number of points
+* scale: If TRUE, the data will be scaled
+* method: Possible values are:
+  * dist: Treats the data as distance matrix
+  * raw: Treats the data as raw data
+  * hybrid: Expect also raw data, but calculates partial distance matrices 
 
 ```{r}
-pca_fit %>%
-  # extract eigenvalues
-  tidy(matrix = "eigenvalues") %>%
-  ggplot(aes(PC, percent)) +
-  geom_col() +
-  scale_x_continuous(
-    # create one axis tick per PC
-    breaks = 1:18
-  ) +
-  scale_y_continuous(
-    name = "variance explained",
-    # format y axis ticks as percent values
-    label = scales::label_percent(accuracy = 1)
-  )
-```
+library(dbscan)
+library(factoextra)
+library(NbClust)
 
+# Create cluster df
+cluster_df <- ride_metrics %>%
+  select(-id,-year,-quarter,-gender,-w_prime_error,-critical_power_error,-week_total_work,-week_total_distance) %>%
+  drop_na()
+
+fviz_nbclust(cluster_df, kmeans, method = "wss")
+  labs(subtitle = "Elbow method")
+
+# Determine DBSCAN eps value
+kNNdistplot(cluster_df, k = 4)
+abline(h = 10000, lty = 2)
+
+# Determine minPts value
+log(17992)
+
+# Compute DBSCAN
+set.seed(2021)
+db <- dbscan(cluster_df, eps = 10000, minPts = 4)
+
+# Plot DBSCAN results
+print(db)
+plot(db, cluster_df, main = "DBSCAN",frame = FALSE)
+```
 
 
 
