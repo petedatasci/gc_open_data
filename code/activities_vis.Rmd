@@ -343,6 +343,20 @@ cycling_pca %>%
        y = "Relative importance in principle component")
 ```
 
+```{r}
+# PC3 bar chart
+
+cycling_pca %>%
+  filter(component == "PC3") %>%
+  top_n(14, abs(value)) %>%
+  mutate(terms = reorder(terms, value)) %>%
+  ggplot(aes(terms, value, fill = terms)) +
+  geom_col(show.legend = FALSE, alpha = 0.8) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+        axis.ticks.x = element_blank()) + 
+  labs(x = "Ride Metrics",
+       y = "Relative importance in principle component")
+```
 
 
 
@@ -448,7 +462,87 @@ library(NbClust)
 # Create cluster df
 cluster_df <- ride_metrics %>%
   select(-id,-year,-quarter,-gender,-w_prime_error,-critical_power_error,-week_total_work,-week_total_distance) %>%
-  drop_na()
+  drop_na() %>%
+  scale()
+```
+
+```{r}
+# K-means
+
+ride_clust <- kmeans(cluster_df, centers = 3)
+ride_clust
+summary(ride_clust)
+
+## tidy results
+tidy(ride_clust)
+```
+
+While these summaries are useful, they would not have been too difficult to extract out from the data set yourself. The real power comes from combining these analyses with other tools like dplyr.
+
+Let’s say we want to explore the effect of different choices of k, from 1 to 9, on this clustering. First cluster the data 9 times, each using a different value of k, then create columns containing the tidied, glanced and augmented data:
+
+```{r}
+ride_clusts <- 
+  tibble(k = 1:9) %>%
+  mutate(ride_clust = map(k, ~kmeans(cluster_df, .x)),
+         tidied = map(ride_clust, tidy),
+         glanced = map(ride_clust, glance),
+         augmented = map(ride_clust, augment, cluster_df)
+  )
+```
+
+We can turn these into three separate data sets each representing a different type of data: using tidy(), using augment(), and using glance(). Each of these goes into a separate data set as they represent different types of data.
+
+```{r}
+clusters <- 
+  ride_clusts %>%
+  unnest(cols = c(tidied))
+
+assignments <- 
+  ride_clusts %>% 
+  unnest(cols = c(augmented))
+
+clusterings <- 
+  ride_clusts %>%
+  unnest(cols = c(glanced))
+```
+
+Now we can plot the original points using the data from augment(), with each point colored according to the predicted cluster.
+
+```{r}
+# Assignments plot
+ggplot(assignments, aes(x = critical_power, y = week_relative_intensity)) +
+  geom_point(aes(color = .cluster), alpha = 0.8) + 
+  facet_wrap(~ k)
+
+# Clusters plot
+
+ggplot(assignments, aes(x = critical_power, y = week_average_power)) +
+  geom_point(aes(color = .cluster), alpha = 0.8) + 
+  facet_wrap(~ k) +
+  geom_point(data = clusters, size = 10, shape = "x")
+```
+
+The data from `glance()` fills a different but equally important purpose; it lets us view trends of some summary statistics across values of `k`. Of particular interest is the total within sum of squares, saved in the `tot.withinss` column.
+
+```{r}
+# Elbow plot
+
+ggplot(clusterings, aes(k, tot.withinss)) +
+  geom_line() +
+  geom_point()
+```
+
+```{r}
+
+# Re-run k means with k=3
+kclust <- kmeans(cluster_df, centers = 4)
+
+sil <- cluster::silhouette(kclust$cluster, dist(cluster_df))
+fviz_silhouette(sil)
+
+```
+
 
 fviz_nbclust(cluster_df, kmeans, method = "wss")
   labs(subtitle = "Elbow method")
