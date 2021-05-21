@@ -35,7 +35,7 @@ options(scipen = 999)
 ```
 
 
-## Read in activities data
+# Read in activities data
 ```{r}
 rides <- read_rds("~/R/gc_open_data/data/activities_cp.rds") %>%
   relocate(year:`30m_critical_power`,
@@ -47,6 +47,7 @@ rides <- read_rds("~/R/gc_open_data/data/activities_cp.rds") %>%
 
 ```
 
+# Training metrics
 
 ## Training metrics by week
 
@@ -148,6 +149,8 @@ weekly_metrics %>%
 
 ```
 
+# Linear Model
+
 ## Create a linear model
 ```{r}
 
@@ -190,6 +193,7 @@ summary(model_fit$fit)
 
 ```
 
+## Variance inflation factor
 ```{r}
 # Cor matrix
 library(corrplot)
@@ -231,12 +235,12 @@ tidy(model_fit)
 glance(model_fit)
 ```
 
+## Variable Importance
+
 ```{r}
 # variable importance
 vip(model_fit, num_features = 15)
 ```
-
-
 
 # Dimensionality reduction: Principle component analysis
 
@@ -358,9 +362,7 @@ cycling_pca %>%
        y = "Relative importance in principle component")
 ```
 
-
-
-### Plot PCA loadings + scores
+## Plot PCA loadings + scores
 We have the PCA loadings in `cycling_pca`. But we need them in a wide format now for plotting.
 
 ```{r}
@@ -445,15 +447,6 @@ bake(pca_prep, new_data = NULL) %>%
 
 # Clustering
 
-DBscan:
-* eps: Reachability maximum distance
-* MinPts: Reachability minimum number of points
-* scale: If TRUE, the data will be scaled
-* method: Possible values are:
-  * dist: Treats the data as distance matrix
-  * raw: Treats the data as raw data
-  * hybrid: Expect also raw data, but calculates partial distance matrices 
-
 ```{r}
 library(dbscan)
 library(factoextra)
@@ -466,6 +459,7 @@ cluster_df <- ride_metrics %>%
   scale()
 ```
 
+## K-means
 ```{r}
 # K-means
 
@@ -544,6 +538,8 @@ fviz_silhouette(sil)
 ```
 
 
+# IGNORE
+```{r}
 fviz_nbclust(cluster_df, kmeans, method = "wss")
   labs(subtitle = "Elbow method")
 
@@ -561,6 +557,7 @@ db <- dbscan(cluster_df, eps = 10000, minPts = 4)
 # Plot DBSCAN results
 print(db)
 plot(db, cluster_df, main = "DBSCAN",frame = FALSE)
+
 ```
 
 
@@ -569,7 +566,9 @@ plot(db, cluster_df, main = "DBSCAN",frame = FALSE)
 
 
 
-# Training metrics vs CP
+
+
+## Training metrics vs CP
 ```{r}
 # Training duration
 quarter_metrics %>%
