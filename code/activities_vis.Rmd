@@ -36,14 +36,17 @@ options(scipen = 999)
 
 
 # Read in activities data
+
+Create/change variables required for analysis
 ```{r}
 rides <- read_rds("~/R/gc_open_data/data/activities_cp.rds") %>%
   relocate(year:`30m_critical_power`,
            .after = where(is.character)) %>%
   mutate(year = as.factor(year)) %>%
+  mutate(quarter = as.factor(quarter)) %>%
+  mutate(cp_quantile = ntile(critical_power,4)) %>%
   mutate(pwr_hr_ratio = average_power / average_hr) %>%
   select(-X34)
-
 
 ```
 
@@ -71,7 +74,7 @@ week_avg_int <- rides %>%
   summarise(across(c(average_speed:coggan_if,relative_intensity,pwr_hr_ratio), ~ mean(.x, na.rm = TRUE),.names = "week_{.col}"),.groups = "keep") %>%
   ungroup()
   
-weekly_metrics <-full_join(week_total_volume, week_avg_int, by = c("id", "year", "quarter", "week"))
+weekly_metrics <- full_join(week_total_volume, week_avg_int, by = c("id", "year", "quarter", "week"))
 
 ```
 
@@ -86,11 +89,11 @@ quarter_metrics <- weekly_metrics %>%
 
 # join with cp metrics
 cp_metrics <- rides %>%
-  select(id,age,year,quarter, gender,critical_power,w_prime,critical_power_error,w_prime_error) %>%
+  select(id,age,year,quarter, gender,critical_power,w_prime,critical_power_error,w_prime_error,cp_quantile) %>%
   unique()
 
-ride_metrics <- full_join(quarter_metrics, cp_metrics, by = c("id","year","quarter"))
-
+ride_metrics <- full_join(quarter_metrics, cp_metrics, by = c("id","year","quarter")) %>%
+  drop_na()
 
 ```
 
@@ -158,7 +161,7 @@ weekly_metrics %>%
 set.seed(2021)
 
 ride_split <- ride_metrics %>%
-  select(-id,-quarter,-year,-gender,-w_prime_error, -critical_power_error,-w_prime, -week_total_work,-week_total_distance) %>%
+  select(-id,-quarter,-year,-gender,-w_prime_error, -critical_power_error,-w_prime,-cp_quantile) %>%
   initial_split()
 
 ride_training <- ride_split %>%
@@ -166,9 +169,10 @@ ride_training <- ride_split %>%
 
 ride_test <- ride_split %>%
   testing()
+
+#  -week_total_work,-week_total_distance
 ```
 
-`week_total_work` and `week_total_distance` removed due to collinearity: Variance inflation factor > 10 is problematic (Book et al., 2001,2012,2017).
 
 ```{r}
 # Create model
@@ -208,6 +212,68 @@ mc.plot(model_fit$fit, Inter = TRUE)
 
 ```
 
+Based on variance inflation factor and removing variables individually based on a VIF of grater than 10, the variables `week_total_work`, `week_total_distance` were removed from the data set. (Book et al., 2001,2012,2017).
+
+# Adapted linear model
+
+```{r}
+
+# Create a split object
+set.seed(2021)
+
+ride_split <- ride_metrics %>%
+  select(-id,-quarter,-year,-gender,-w_prime_error, -critical_power_error,-w_prime,-cp_quantile, -week_total_work,-week_total_distance) %>%
+  initial_split()
+
+ride_training <- ride_split %>%
+  training()
+
+ride_test <- ride_split %>%
+  testing()
+
+#  -week_total_work,-week_total_distance
+```
+
+
+```{r}
+# Create model
+model <- linear_reg() %>%
+  set_engine("lm") %>%  # adds lm implementation of linear regression
+  set_mode("regression")
+
+# Fitting to training data
+
+model_fit <- model %>%
+  fit(critical_power ~., data = ride_training)
+```
+
+## Evaluate model
+```{r}
+## View model_fit properties
+model_fit
+
+names(model_fit)
+
+summary(model_fit$fit)
+
+```
+
+## Variance inflation factor
+```{r}
+# Cor matrix
+library(corrplot)
+cor1 <- cor(ride_training)
+corrplot.mixed(cor1, lower.col = "black", numeber.cex = .7)
+
+# Check multicollinearity with variance inflation factor (VIF)
+vif_values <- car::vif(model_fit$fit)
+vif_values
+
+mc.plot(model_fit$fit, Inter = TRUE)
+
+```
+
+## Diagnostic Plots
 ```{r}
 # Diagnostic plots
 
@@ -247,8 +313,6 @@ vip(model_fit, num_features = 15)
 ```{r}
 # Method 1 - tidy models (AH)
 pca_df <- ride_metrics %>%
-  mutate(quarter = as.factor(quarter)) %>%
-  mutate(cp_quantile = ntile(critical_power,4)) %>%
   select(-id,-year,-quarter,-critical_power,-w_prime,-critical_power_error,-w_prime_error,-week_total_work,-week_total_distance)
 
 pca_recipe <- recipe(~ ., data = pca_df) %>%
@@ -326,12 +390,14 @@ cycling_pca %>%
   mutate(terms = reorder(terms, value)) %>%
   ggplot(aes(terms, value, fill = terms)) +
   geom_col(show.legend = FALSE, alpha = 0.8) +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
-        axis.ticks.x = element_blank()) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),         axis.ticks.x = element_blank()) + 
   labs(x = "Ride Metrics",
        y = "Relative importance in principle component")
 
 ```
+
+PCA1 suggests that measures of exercise intensity increase together. A high average power means a higher normalised power and relative intensity (averaged on a per week basis). An increasing average power suggests a decreasing total workout time.
+
 
 ```{r}
 # PC2 bar chart
@@ -347,6 +413,9 @@ cycling_pca %>%
        y = "Relative importance in principle component")
 ```
 
+PCA2 increases with both total workout time and weekly tss total, both represent how much training has been done on a weekly basis. Those who have a higher weekly training volume have a decreasing relative intensity.
+
+
 ```{r}
 # PC3 bar chart
 
@@ -361,6 +430,9 @@ cycling_pca %>%
   labs(x = "Ride Metrics",
        y = "Relative importance in principle component")
 ```
+
+PCA3 increases with an increased power to heart rate ratio and decreases with average heart rate. This suggests may be suggestive of interval training? Whereby a a higher intensity is not usually matched by higher heart rate values??
+
 
 ## Plot PCA loadings + scores
 We have the PCA loadings in `cycling_pca`. But we need them in a wide format now for plotting.
@@ -444,6 +516,19 @@ bake(pca_prep, new_data = NULL) %>%
   
 ```
 
+# Remove uneeded dfs
+
+```{r}
+remove(model)
+remove(model_fit)
+remove(rides)
+remove(vif_values)
+remove(rides)
+remove(cp_metrics)
+remove(week_avg_int)
+remove(week_total_volume)
+```
+
 
 # Clustering
 
@@ -454,16 +539,18 @@ library(NbClust)
 
 # Create cluster df
 cluster_df <- ride_metrics %>%
-  select(-id,-year,-quarter,-gender,-w_prime_error,-critical_power_error,-week_total_work,-week_total_distance) %>%
-  drop_na() %>%
-  scale()
+  select(-id,-year,-quarter,-gender,-w_prime_error,-critical_power_error,-cp_quantile,-week_total_work,-week_total_distance) %>%
+  scale() %>%
+  as_tibble()
 ```
 
 ## K-means
+
+https://www.tidymodels.org/learn/statistics/k-means/
 ```{r}
 # K-means
 
-ride_clust <- kmeans(cluster_df, centers = 3)
+ride_clust <- kmeans(cluster_df, centers = 4)
 ride_clust
 summary(ride_clust)
 
@@ -505,10 +592,15 @@ Now we can plot the original points using the data from augment(), with each poi
 
 ```{r}
 # Assignments plot
-ggplot(assignments, aes(x = critical_power, y = week_relative_intensity)) +
+ggplot(assignments, aes(x = critical_power, y = week_total_tss)) +
   geom_point(aes(color = .cluster), alpha = 0.8) + 
   facet_wrap(~ k)
 
+```
+
+Already we get a good sense of the proper number of clusters (3), and how the k-means algorithm functions when k is too high or too low. We can then add the centers of the cluster using the data from tidy():
+
+```{r}
 # Clusters plot
 
 ggplot(assignments, aes(x = critical_power, y = week_average_power)) +
@@ -517,56 +609,139 @@ ggplot(assignments, aes(x = critical_power, y = week_average_power)) +
   geom_point(data = clusters, size = 10, shape = "x")
 ```
 
+The clusters plot above suggests that k = 3 may be an optimal number for k.
+
 The data from `glance()` fills a different but equally important purpose; it lets us view trends of some summary statistics across values of `k`. Of particular interest is the total within sum of squares, saved in the `tot.withinss` column.
 
 ```{r}
 # Elbow plot
-
 ggplot(clusterings, aes(k, tot.withinss)) +
   geom_line() +
   geom_point()
 ```
 
-```{r}
+The elbow plot above also suggests that k =3 might be an optimal number for k. Therefore, we re-run the cluster analysis and use a silhouette plot to confirm. 
 
+Si > 0 means the observation is well clustered. The closer it is to 1, the better it is clustered.
+Si < 0 means the observation was placed in the wrong cluster
+Si = 0 means the observation is between two clusters
+
+```{r}
 # Re-run k means with k=3
-kclust <- kmeans(cluster_df, centers = 4)
+kclust <- kmeans(cluster_df, centers = 3, nstart = 20)
+kclust$cluster
+
+clusters <- 
+  ride_clusts %>%
+  unnest(cols = c(tidied))
+
+assignments <- 
+  ride_clusts %>% 
+  unnest(cols = c(augmented))
+
+clusterings <- 
+  ride_clusts %>%
+  unnest(cols = c(glanced))
+
 
 sil <- cluster::silhouette(kclust$cluster, dist(cluster_df))
 fviz_silhouette(sil)
 
+# Objects with negative silhouette
+neg_sil_index <- which(sil[, 'sil_width'] < 0)
+sil[neg_sil_index, , drop = FALSE]
+
+
+# scatter plot - how many are mis-clustered?
+as_tibble(sil[neg_sil_index, , drop = FALSE]) %>%
+  ggplot(aes(x = cluster, y = neighbor)) +
+  geom_jitter()
+
 ```
+
+## Clustering visualisation
+
+```{r}
+# bind cluster results into cluster dataframe
+cluster_df_blend <- cbind(cluster_df, kclust = kclust$cluster, cp_quantile = ride_metrics$cp_quantile) %>%
+  as_tibble()
+
+```
+
+
+```{r}
+# Grid showing clusters for important variables
+library(cowplot)
+
+
+# total weekly hours
+hours_plot <- ggplot(cluster_df_blend, aes(x = critical_power, y = week_total_workout_time)) +
+  geom_point(aes(colour = as.factor(kclust), shape = as.factor(cp_quantile)),alpha = 0.6)
+
+avgpwr_plot <- ggplot(cluster_df_blend, aes(x = critical_power, y = week_average_power)) +
+  geom_point(aes(colour = as.factor(kclust), shape = as.factor(cp_quantile)),alpha = 0.6)
+
+ri_plot <-ggplot(cluster_df_blend, aes(x = critical_power, y = week_relative_intensity)) +
+  geom_point(aes(colour = as.factor(kclust), shape = as.factor(cp_quantile)),alpha = 0.6)
+
+tss_plot <- ggplot(cluster_df_blend, aes(x = critical_power, y = week_total_tss)) +
+  geom_point(aes(colour = as.factor(kclust), shape = as.factor(cp_quantile)),alpha = 0.6)
+
+```
+
+```{r}
+grid_plot <- plot_grid(
+  hours_plot + theme(legend.position="none"),
+  avgpwr_plot + theme(legend.position="none"),
+  ri_plot + theme(legend.position="none"),
+  tss_plot + theme(legend.position="none"),
+  labels = c("A","B","C","D"),
+  nrow = 2
+)
+
+grid_plot
+
+# extract legend from one of the plots
+legend <- get_legend(hours_plot + theme(legend.box.margin = margin(0,0,0,12))
+)
+
+# add legend 
+
+plot_grid(grid_plot, legend, rel_widths = c(3,.4))
+```
+
+
+
+## Clustering interpretation
+
+```{r}
+fviz_cluster(kclust, data = cluster_df)
+
+cluster_df_blend %>%
+  group_by(cluster) %>%
+  summarise_all("mean")
+
+```
+Results above suggest that:
+* Cluster 1: low values across all variables (are these the lower performers?)
+* Cluster 2: High value for `week_total_workout_time` and `week_total_tss` with lower values for intensity based measures - Highest critical power value
+* Cluster 3: High value for `week_coggan_np`, `week_coggan_if` and `week_relative_intensity`. Essentially opposite to cluster 2.
+
+
+
+```{r}
+# bind clusters into original data frame
+metrics_blend <- cbind(ride_metrics, kclust$cluster) %>%
+  as_tibble()
+
+  
+```
+
+
+
 
 
 # IGNORE
-```{r}
-fviz_nbclust(cluster_df, kmeans, method = "wss")
-  labs(subtitle = "Elbow method")
-
-# Determine DBSCAN eps value
-kNNdistplot(cluster_df, k = 4)
-abline(h = 10000, lty = 2)
-
-# Determine minPts value
-log(17992)
-
-# Compute DBSCAN
-set.seed(2021)
-db <- dbscan(cluster_df, eps = 10000, minPts = 4)
-
-# Plot DBSCAN results
-print(db)
-plot(db, cluster_df, main = "DBSCAN",frame = FALSE)
-
-```
-
-
-
-
-
-
-
-
 
 ## Training metrics vs CP
 ```{r}
