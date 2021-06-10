@@ -22,27 +22,39 @@ library(readr)
 library(janitor)
 library(readxl)
 library(lubridate)
-theme_set(theme_minimal())
+library(ggthemr)
+ggthemr("fresh")
 
 ```
 
-## Read data
-```{r}
+## Data Cleaning
+
+
+##### Read data
+```{r read-data}
 activities <- read_csv("data/activities.csv")
+
+```
+
+```{r dataframe structure}
+str(activities_var)
+```
+
+```{r add-variables}
 
 # Add additional variables
 activities_var <- activities %>%
   mutate(date = as_date(date),
-           year = year(date),
-         quarter = quarter(date),
-         week = week(date)) %>%
+                year = year(date),
+                quarter = quarter(date),
+                week = week(date)) %>%
   mutate(workout_time_min = workout_time/60)
 
 ```
 
-## Filter Data
+##### Data Distributions
 
-```{r}
+```{r activities-per-year-vis}
 options(scipen = 999)
 
 # View number of uploaded activites per year
@@ -56,11 +68,28 @@ activities %>%
   
 ```
 
+```{r male-female}
+activities %>%
+  group_by(gender) %>%
+  summarise(gender_count = n())
 
-```{r}
+# As percentage
+activities %>%
+  group_by(gender) %>%
+  summarise(count = n() ) %>%
+  mutate( prop = count / sum(count) )
+
+```
+
+##### Filter Data
+
+Create additional or mutate existing variables to assist in filtering and initial plotting
+```{r filter-data}
 activities_filtered <- activities_var %>%
   # keep only bike activities
   filter(sport == "Bike") %>%
+  # keep only females
+  filter(gender == "M") %>%
   # 2015 onwards - more accessible and reliable power meters on bikes & increase in uploads
   filter(year >= 2015) %>%
   # standard for research
@@ -87,9 +116,11 @@ activities_filtered <- activities_var %>%
          
 ```
 
-## Quarterly best MMPs
+## Data Manipulation
 
-```{r}
+##### Quarterly best MMPs
+
+```{r quarter-best-mmp}
 # Extract best MMP values for each quarter per year 
 activities_quarters <- activities_filtered %>%
   group_by(id,year,quarter) %>%
@@ -99,9 +130,9 @@ activities_quarters <- activities_filtered %>%
 ```
 
 
-# Critical power model
+##### Critical power model
 
-```{r}
+```{r critical-power}
 library(tidymodels)
 # Convert to long format
 activities_quarters_long <- activities_quarters %>%
@@ -154,9 +185,232 @@ activities_cp <- cp_model %>%
 
 ```
 
-```{r}
-summary(activities_cp)
+```{r power-duration-distribution}
+
+ggplot(activities_cp,
+       aes(x = critical_power)) +
+  geom_histogram(binwidth = 5) +
+  labs(title = "Critical Power distribution in males",
+       x = "Critical Power (W)")
+
+ggsave(path = "plots", filename = "cp_dist.png")
+  
+
+ggplot(activities_cp,
+       aes(x = w_prime)) +
+  geom_histogram(binwidth = 1000) +
+  labs(title = "W' distribution in males",
+       x = "W' (J)")
+
+ggsave(path = "plots", filename = "wprime_dist.png")
+
 ```
+
+##### Remove unwanted data frames
+
+```{r}
+remove(activities)
+remove(activities_var)
+remove(activities_filtered)
+remove(activities_quarters)
+remove(activities_quarters_long)
+remove(activities_quarters_nest)
+remove(cp_model)
+```
+
+##### Quarterly best training metrics
+
+```{r cp-quartiles + hw-pwr-ratio }
+rides <- activities_cp %>%
+  relocate(year:`30m_critical_power`,
+           .after = where(is.character)) %>%
+  mutate(year = as.factor(year)) %>%
+  mutate(quarter = as.factor(quarter)) %>%
+  mutate(cp_quantile = ntile(critical_power,4)) %>%
+  mutate(pwr_hr_ratio = average_power / average_hr) %>%
+  select(-X34)
+```
+
+
+```{r cp-quartile-vis}
+library(gghalves)
+library(ggdist)
+
+ggplot(rides, aes(x = as.factor(cp_quantile), y = critical_power)) +
+  stat_halfeye(
+    adjust = 0.5,
+    width = 0.6,
+    .width = 0,
+    justification = -0.3) +
+  geom_point(
+    size = 1.3,
+    alpha = 0.15,
+    position = position_jitter(
+      seed = 1, width = 0.1)
+  ) +
+  geom_boxplot(
+    width = 0.25,
+    outlier.shape = NA
+  ) +
+  labs(title = "Critical power quartiles",
+       x = "Quartile",
+       y = "Critical Power (W)")
+
+ggsave(path = "plots", filename = "cp_quartile_dist.png")
+
+
+```
+
+
+```{r volume-by-week}
+# Weekly training metrics
+week_total_volume <- rides %>%
+  group_by(id,year,quarter,week) %>%
+  summarise(across(c("workout_time_min","total_distance","elevation_gain","total_work", "coggan_tss"), ~sum(.x, na.rm = TRUE),.names = "week_{.col}"),.groups = "keep") %>%
+  dplyr::rename(week_total_workout_time = week_workout_time_min,
+                week_total_elevation_gain = week_elevation_gain,
+                week_total_tss = week_coggan_tss) %>%
+  ungroup()
+```
+
+
+```{r intensity-by-week}
+week_avg_int <- rides %>%
+  # calculate relative session intensity
+  mutate(relative_intensity = average_power / critical_power) %>%
+  # calculate weekly averages
+  group_by(id,year,quarter,week) %>%
+  summarise(across(c(average_speed:coggan_if,relative_intensity,pwr_hr_ratio), ~ mean(.x, na.rm = TRUE),.names = "week_{.col}"),.groups = "keep") %>%
+  ungroup()
+```
+
+
+```{r all-week-metrics}
+weekly_metrics <- full_join(week_total_volume, week_avg_int, by = c("id", "year", "quarter", "week"))
+```
+
+
+```{r metrics-quarter}
+
+quarter_metrics <- weekly_metrics %>%
+  group_by(id,year,quarter) %>%
+  summarise(across(c(week_total_workout_time:week_pwr_hr_ratio), ~ mean(.x, na.rm = TRUE)),.groups = "keep") %>%
+  ungroup()
+
+# join with cp metrics
+cp_metrics <- rides %>%
+  select(id,age,year,quarter, gender,critical_power,w_prime,critical_power_error,w_prime_error,cp_quantile) %>%
+  unique()
+
+ride_metrics <- full_join(quarter_metrics, cp_metrics, by = c("id","year","quarter")) %>%
+  drop_na()
+
+``` 
+
+###### Training metric plots
+
+**Weekly average training volume and intensity by quartile**
+
+Weekly averages are calculated per quarter (3 month period)
+
+```{r metrics-vis-1}
+ggplot(ride_metrics,
+       aes(x = week_total_workout_time)) +
+  geom_histogram(binwidth = 15) +
+  labs(title = "Weekly training duration",
+       x = "Weekly training duration (minutes)")
+
+ggsave(path = "plots", filename = "training_mins_dist.png")
+
+
+```
+
+```{r metrics-vis-2}
+
+ggplot(ride_metrics,
+       aes(x = week_relative_intensity)) +
+  geom_histogram(binwidth = 0.05) +
+  labs(title = "Weekly relative training intensity",
+       x = "Proportion of critical power")
+
+ggsave(path = "plots", filename = "rel_int_dist.png")
+
+```
+
+```{r volume-by-quartile}
+ggplot(ride_metrics, aes(x = as.factor(cp_quantile), y = week_total_workout_time)) +
+  stat_halfeye(
+    adjust = 0.5,
+    width = 0.6,
+    .width = 0,
+    justification = -0.3) +
+  geom_point(
+    size = 1.3,
+    alpha = 0.15,
+    position = position_jitter(
+      seed = 1, width = 0.1)
+  ) +
+  geom_boxplot(
+    width = 0.25,
+    outlier.shape = NA
+  ) +
+  labs(title = "Weekly training volume",
+       x = "Quartile",
+       y = "Average minutes per week")
+
+ggsave(path = "plots", filename = "vol_by_quartile.png")
+```
+
+```{r intensity-by-quartile}
+
+ggplot(ride_metrics, aes(x = as.factor(cp_quantile), y = week_relative_intensity)) +
+  stat_halfeye(
+    adjust = 0.5,
+    width = 0.6,
+    .width = 0,
+    justification = -0.3) +
+  geom_point(
+    size = 1.3,
+    alpha = 0.15,
+    position = position_jitter(
+      seed = 1, width = 0.1)
+  ) +
+  geom_boxplot(
+    width = 0.25,
+    outlier.shape = NA
+  ) +
+  labs(title = "Weekly training intensity",
+       x = "Quartile",
+       y = "Proportion of critical power")
+
+ggsave(path = "plots", filename = "rel_int_by_quartile.png")
+```
+
+
+```{r total-tss-quartile}
+ggplot(ride_metrics, aes(x = as.factor(cp_quantile), y = week_total_tss)) +
+  stat_halfeye(
+    adjust = 0.5,
+    width = 0.6,
+    .width = 0,
+    justification = -0.3) +
+  geom_point(
+    size = 1.3,
+    alpha = 0.15,
+    position = position_jitter(
+      seed = 1, width = 0.1)
+  ) +
+  geom_boxplot(
+    width = 0.25,
+    outlier.shape = NA
+  ) +
+  labs(title = "Weekly total training load",
+       x = "Quartile",
+       y = "Training Stress Score (AU)")
+
+ggsave(path = "plots", filename = "total_tss_by_quartile.png")
+```
+
 
 ## Write to rds file
 ```{r}
