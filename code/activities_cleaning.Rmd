@@ -34,13 +34,10 @@ ggthemr("fresh")
 ```{r read-data}
 activities <- read_csv("data/activities.csv")
 
+
 ```
 
-```{r dataframe structure}
-str(activities_var)
-```
-
-```{r add-variables}
+```{r}
 
 # Add additional variables
 activities_var <- activities %>%
@@ -48,6 +45,7 @@ activities_var <- activities %>%
                 year = year(date),
                 quarter = quarter(date),
                 week = week(date)) %>%
+  # convert workout duration to minutes
   mutate(workout_time_min = workout_time/60)
 
 ```
@@ -57,13 +55,13 @@ activities_var <- activities %>%
 ```{r activities-per-year-vis}
 options(scipen = 999)
 
-# View number of uploaded activites per year
-activities %>%
+# View number of uploaded activities per year
+activities_var %>%
   filter(sport == "Bike") %>%
   ggplot(aes(x = factor(year))) +
   geom_histogram(binwidth = 1, stat = "count") +
   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-  labs(title = "Activities uploaded per year",
+  labs(title = "Total number of cycling activities uploaded per year",
        x = "Year") 
   
 ```
@@ -84,13 +82,14 @@ activities %>%
 ##### Filter Data
 
 Create additional or mutate existing variables to assist in filtering and initial plotting
+
 ```{r filter-data}
 activities_filtered <- activities_var %>%
   # keep only bike activities
   filter(sport == "Bike") %>%
   # keep only females
-  filter(gender == "M") %>%
-  # 2015 onwards - more accessible and reliable power meters on bikes & increase in uploads
+  # filter(gender == "M") %>%
+  # 2015 onwards - coincides with larger increases in activity uploads
   filter(year >= 2015) %>%
   # standard for research
   filter(age >= 18 & age <= 60) %>%
@@ -117,6 +116,70 @@ activities_filtered <- activities_var %>%
 ```
 
 ## Data Manipulation
+
+##### Number of activites per individual
+
+```{r number-of-rides-dists}
+# how many rides do individuals do per week/quarter
+
+## dummy column for cumulative count
+activities_filtered$rec <- 1
+
+activities_ride_no <- activities_filtered %>%
+  arrange(date) %>%
+  group_by(id) %>%
+  mutate(ride_count = cumsum(rec)) %>%
+  ungroup()
+
+
+activities_total_rides <- activities_ride_no %>%
+  # rides per week
+  group_by(id, year,week) %>%
+  mutate(rides_per_week = sum(rec)) %>%
+  ungroup() %>%
+  group_by(id, year, quarter) %>%
+  mutate(rides_per_quarter = sum(rec)) %>%
+  ungroup()
+
+# how many rides do individuals upload in total?
+activities_total_rides %>%
+  ggplot(aes(x = n)) +
+  geom_histogram(binwidth = 25) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  coord_cartesian(xlim = c(0, 2000)) +
+  scale_x_continuous(breaks = seq(0,2000, by = 200)) +
+  labs(title = "How many activites do individual users upload?",
+       x = "Number of rides uploaded") 
+
+# per quarter histogram
+activities_total_rides %>%
+  group_by(id) %>%
+  summarise(mean_rides_per_quarter = mean(rides_per_quarter)) %>%
+  ungroup() %>%
+  ggplot(aes(x = mean_rides_per_quarter)) +
+  geom_histogram(binwidth = 1) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  coord_cartesian(xlim = c(0, 250)) +
+  scale_x_continuous(breaks = seq(0,250, by = 25)) +
+  labs(title = "How many rides do people do per quarter?",
+       x = "Number of rides per quarter")
+
+# per week histogram
+activities_total_rides %>%
+  group_by(id) %>%
+  summarise(mean_rides_per_week = mean(rides_per_week)) %>%
+  ungroup() %>%
+  ggplot(aes(x = mean_rides_per_week)) +
+  geom_histogram(binwidth = 1) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  coord_cartesian(xlim = c(0, 20)) +
+  scale_x_continuous(breaks = seq(0,20, by = 1)) +
+  labs(title = "How many rides do people do per week?",
+       x = "Number of rides per week")
+
+
+  
+```
 
 ##### Quarterly best MMPs
 
@@ -218,7 +281,7 @@ remove(activities_quarters_nest)
 remove(cp_model)
 ```
 
-##### Quarterly best training metrics
+##### Quarterly training metrics
 
 ```{r cp-quartiles + hw-pwr-ratio }
 rides <- activities_cp %>%
@@ -226,9 +289,23 @@ rides <- activities_cp %>%
            .after = where(is.character)) %>%
   mutate(year = as.factor(year)) %>%
   mutate(quarter = as.factor(quarter)) %>%
+  mutate(week = as.factor(week)) %>%
   mutate(cp_quantile = ntile(critical_power,4)) %>%
   mutate(pwr_hr_ratio = average_power / average_hr) %>%
   select(-X34)
+```
+
+
+```{r calculate rides per week/quarter}
+
+rides_weekly <- rides %>%
+  group_by(id, year, week) %>%
+  summarise(rides_per_week = n())
+
+rides_quarterly <- rides %>%
+  group_by(id,year,quarter) %>%
+  summarise(rides_per_quarter = n())
+
 ```
 
 
@@ -271,8 +348,14 @@ week_total_volume <- rides %>%
                 week_total_elevation_gain = week_elevation_gain,
                 week_total_tss = week_coggan_tss) %>%
   ungroup()
-```
 
+
+# Join week_total_volume with rides_weekly
+
+week_total_volume_2 <- week_total_volume %>%
+  left_join(rides_weekly,by = c("id", "year","week"))
+  
+```
 
 ```{r intensity-by-week}
 week_avg_int <- rides %>%
@@ -285,8 +368,9 @@ week_avg_int <- rides %>%
 ```
 
 
+
 ```{r all-week-metrics}
-weekly_metrics <- full_join(week_total_volume, week_avg_int, by = c("id", "year", "quarter", "week"))
+weekly_metrics <- full_join(week_total_volume_2, week_avg_int, by = c("id", "year", "quarter", "week"))
 ```
 
 
@@ -295,15 +379,23 @@ weekly_metrics <- full_join(week_total_volume, week_avg_int, by = c("id", "year"
 quarter_metrics <- weekly_metrics %>%
   group_by(id,year,quarter) %>%
   summarise(across(c(week_total_workout_time:week_pwr_hr_ratio), ~ mean(.x, na.rm = TRUE)),.groups = "keep") %>%
-  ungroup()
+  ungroup() %>%
+  rename(mean_weekly_rides = rides_per_week)
 
-# join with cp metrics
+# merge with rides_quarterly df to include total rides per quarter
+
+quarter_metrics_2 <- quarter_metrics %>%
+  left_join(rides_quarterly, by = c("id","year","quarter"))
+
+# add cp metrics to rides dataframe
 cp_metrics <- rides %>%
   select(id,age,year,quarter, gender,critical_power,w_prime,critical_power_error,w_prime_error,cp_quantile) %>%
   unique()
 
-ride_metrics <- full_join(quarter_metrics, cp_metrics, by = c("id","year","quarter")) %>%
-  drop_na()
+ride_metrics <- full_join(quarter_metrics_2, cp_metrics, by = c("id","year","quarter")) 
+
+
+# %>% drop_na()
 
 ``` 
 
@@ -411,11 +503,36 @@ ggplot(ride_metrics, aes(x = as.factor(cp_quantile), y = week_total_tss)) +
 ggsave(path = "plots", filename = "total_tss_by_quartile.png")
 ```
 
+**Summary table of training metrics**
+
+```{r}
+library(gt)
+library(gtsummary)
+library(webshot)  # save gt table as png
+
+weekly_metrics_table <- ride_metrics %>%
+  select(gender, critical_power ,week_total_workout_time, week_total_work, mean_weekly_rides) %>%
+  dplyr::rename("Critical Power (W)" = critical_power,
+                "Weekly volume (mins)" = week_total_workout_time,
+                "Work done per week (J)" = week_total_work,
+                "Rides per week" = mean_weekly_rides) %>%
+  tbl_summary(
+    by = gender,
+    missing = "no",
+    statistic = all_continuous() ~ "{mean} ({sd})",
+    digits = (all_continuous() ~ 1)) %>%
+  as_gt %>%
+  opt_align_table_header(align = "left") %>%
+  tab_header(title = "Table 1. Weekly training characteristics")
+
+gtsave(weekly_metrics_table, filename = "weekly_training_metrics.png",path = "plots")
+                
+```
 
 ## Write to rds file
 ```{r}
-write_rds(x = activities_cp,
-          file = "data/activities_cp.rds")
+write_rds(x = ride_metrics,
+          file = "data/ride_metrics.rds")
 ```
 
 
