@@ -1,0 +1,337 @@
+---
+title: "GC Mixed Model"
+author: "Peter Bonner"
+date: "23/06/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.height = 5,
+	fig.width = 8,
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE,
+	dpi = 180
+)
+```
+
+
+```{r}
+library(ggthemr)
+library(tidyverse)
+library(tidymodels)
+library(readr)
+library(lme4)
+library(corrr)
+library(GGally)
+ggthemr("fresh")
+set_swatch(swatch_colours)
+
+theme_set(theme_minimal())
+```
+
+# Read in data
+
+```{r}
+ride_metrics <- read_rds("data/ride_metrics.rds") %>%
+  # drop proprietary variables
+  select(-week_total_tss,-week_coggan_if,-critical_power_error, -w_prime_error)
+```
+
+Proprietary variables are dropped because they are determined by another 'performance threshold' value that we have no visual of, nor do we know the value. Furthermore it's calculation differs from the `critica_power` variable I am using for this analysis.
+
+# Principle Component Analysis
+
+### Correlation matrix
+
+```{r}
+rides_cor <- ride_metrics %>%
+  dplyr::select(where(is.numeric)) %>%
+  correlate() %>%
+  rearrange()
+
+rides_cor
+```
+
+Correlation matrix suggests that there are several key correlations to look at:
+
+* Week_total_work
+* Week_coggan_np
+* Week_relative_intensity
+
+
+### Pairwise plot matrix
+```{r}
+ride_metrics %>%
+  select(gender, week_total_work,week_coggan_np, week_relative_intensity) %>%
+  GGally::ggpairs(aes(colour = gender))
+```
+
+### Principle component analysis
+
+We’ll use the recipes package from tidymodels to perform a principal component analysis (PCA).
+
+First, we’ll also use a few recipe steps to preprocess the data for PCA; namely, we need to:
+
+* remove any NA values,
+* center all predictors, and
+* scale all predictors.
+
+
+```{r}
+
+ride_pre_pca <- ride_metrics %>%
+  select(-year,-quarter)
+
+pca_recipe <-
+  recipe(~., data = ride_pre_pca) %>%
+  update_role(id,gender,cp_quantile, new_role = "id") %>%
+  step_naomit(all_predictors()) %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors(), id = "pca")
+
+pca_prep <- prep(pca_recipe)
+
+rides_pca <- pca_prep %>%
+  tidy(id = "pca")
+
+
+```
+
+Let’s walk through the steps in this recipe.
+
+* First, we must tell the `recipe()` what’s going on with our model (notice the formula with no outcome) and what data we are using.
+* Next, we update the role for cocktail name and category, since these are variables we want to keep around for convenience as identifiers for rows but are not a predictor or outcome.
+We need to center and scale the numeric predictors, because we are about to implement PCA.
+* Finally, we use `step_pca()` for the actual principal component analysis.
+Before using `prep()` these steps have been defined but not actually run or implemented. The prep() function is where everything gets evaluated.
+
+Once we have that done, we can both explore the results of the PCA. Let’s start with checking out how the PCA turned out. We can `tidy()` any of our recipe steps, including the PCA step, which is the second step. Then let’s make a visualization to see what the components look like.
+
+
+Apply the `recipes::tidy()` method to the output from `recipes::step_pca()` to examine how much variance each component accounts for:
+
+
+```{r}
+rides_recipe %>% 
+  tidy(id = "pca", type = "variance") %>% 
+  dplyr::filter(terms == "percent variance") %>%
+  ggplot(aes(x = component, y = value)) + 
+  geom_col() + 
+  xlim(c(0, 5)) + 
+  ylab("% of total variance")
+```
+
+### Plot PCA loadings
+
+```{r view-components}
+ggthemr_reset()
+
+# 10,000ft
+rides_pca %>% 
+  filter(component %in% paste0("PC", 1:4)) %>%
+  mutate(component = fct_inorder(component)) %>%
+  ggplot(aes(terms, value, fill = terms)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  theme(axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) + 
+  labs(x = NULL,
+    y = "Relative importance in each principal component") +
+  facet_wrap(~ component, ncol = 5) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),         
+        axis.ticks.x = element_blank()) +
+  scale_colour_lancet()
+
+```
+
+Biggest difference in PC1 is `week_total_work`/ `week_total_distance` and `week_relative_intensity`. Training is not likely to have both, the more you train the easier it needs to be. 
+
+Let's zoom into the first four components to better understand which training metrics contribute to positive and negative directions
+
+```{r view-component-contribution}
+ggthemr("fresh")
+
+rides_pca %>%
+  filter(component %in% paste0("PC", 1:4)) %>%
+  mutate(terms = tidytext::reorder_within(terms, 
+                                          abs(value), 
+                                          component)) %>%
+  ggplot(aes(abs(value), terms, fill = value > 0)) +
+  geom_col() +
+  facet_wrap(~component, scales = "free_y") +
+  tidytext::scale_y_reordered() +
+  labs(
+    x = "Absolute value of contribution",
+    y = NULL, fill = "Positive?"
+  ) 
+```
+
+
+PC1 is all about how much cycling a person does (work, distance, time). This explains the most variation in the data. PC2 is looking at how hard a person trains (average power, normalised power and relative intensity).
+
+
+### Plot PCA loadings + scores
+
+How are critical power values distributed in the plane of the first two components?
+
+We have the PCA loadings in `rides_pca`. But we need them in a wide format now for plotting.
+
+```{r}
+# get pca loadings into wider format - but reduce number of variables to help plotting
+
+# pca_wider <- rides_pca %>% 
+#   subset(terms == "week_total_work" | terms == "week_total_distance" | terms == "week_average_power"| terms == "week_relative_intensity") %>%
+#   tidyr::pivot_wider(names_from = component, id_cols = terms)
+```
+
+```{r}
+ggthemr("fresh")
+# 
+# define arrow style
+# arrow_style <- arrow(length = unit(.05, "inches"),
+#                      type = "closed")
+
+
+pca_plot <-
+  juice(rides_recipe) %>%
+  ggplot(aes(PC1, PC2, colour = as.factor(cp_quantile), shape = gender)) +
+  geom_point(alpha = 0.6, 
+             size = 2) +
+  labs(colour = "CP Quantile",
+       shape = "Gender") +
+  scale_colour_ggthemr_d()
+
+pca_plot
+
+# pca_plot +
+#   geom_segment(data = pca_wider,
+#                aes(xend = PC1, yend = PC2), 
+#                x = 0, 
+#                y = 0, 
+#                arrow = arrow_style) + 
+#   geom_text(data = pca_wider,
+#             aes(x = PC1, y = PC2, label = terms), 
+#             hjust = 0, 
+#             vjust = 1,
+#             size = 5)
+```
+
+The `pca_plot` shows:
+* quantiles 3 and 4 are to the left;
+* quantiles 1 and 2 are to the right.
+
+### Plot variables highlighted by PCA
+Letsw view the relationship between critical power quantiles and training volume/intensity
+
+```{r volume + intensity}
+# quartiles volume vs intensity
+ggplot(ride_metrics,
+       aes(x = week_total_workout_time, y = week_relative_intensity, shape = gender)) +
+         geom_point(aes(colour = as.factor(cp_quantile)),alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, aes(linetype = gender)) +
+  scale_colour_ggthemr_d() +
+  labs(colour = "CP Quantile")
+
+# relative intensity vs critical power
+ggplot(ride_metrics,
+       aes(x = week_relative_intensity, y = critical_power, colour = gender)) +
+         geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm",aes(fill = gender)) +
+  scale_colour_ggthemr_d()
+
+```
+
+The trends are more difficult to see when using average power or normalised power, as someone who is 'fitter' will be able to hold a higher power output than someone who is less fit. However, if we look at relative intensity, we can see that better athletes (quantile 4) tend to spend more time cycling at a lower relative intensity than those who in quantiles 1 & 2.
+
+
+```{r}
+library(cowplot)
+
+rel_intensity_his <- 
+  ggplot(ride_metrics, aes(x = week_relative_intensity, fill = as.factor(cp_quantile))) +
+         geom_histogram(alpha = 0.6) +
+         labs(x = "Relative exercise intensity",
+              y = "Frequency",
+              title = "Do better athletes train at a lower exericse intensity?") +
+  facet_wrap(~gender, scales = "free_y") +
+  theme(legend.position = "none")
+
+work_hist <-
+  ggplot(ride_metrics, aes(x = week_total_work, fill = as.factor(cp_quantile))) +
+         geom_histogram(alpha = 0.6) +
+         labs(x = "Work done per week (J)",
+              y = "Frequency",
+              title = "Do better athletes do more work per week?",
+              fill = "CP quantile") +
+  facet_wrap(~gender, scales = "free_y")
+
+
+plot_grid(rel_intensity_his, work_hist, labels = c("A", "B"), label_size = 12)
+```
+
+Comparing the distributions of exercise intensity and work done per week suggests that those who have a higher critical power (quantile 4) perform more work per week and tends to be done at a lower exercise intensity compared to users with a lower critical power value.
+
+
+```{r remove-unused-dataframes}
+remove(arrow_style, pca_plot, pca_prep, pca_recipe, pca_wider, rides_pre_pca, rides_cor,rides_pca, tidied_pca)
+```
+
+
+# Mixed Model
+
+### Preliminaries
+```{r}
+library(lme4)
+library(afex)
+```
+
+
+### Distribution of response cariable (Critical Power)
+
+```{r}
+
+# remove unwanted variables
+
+mm_df <- ride_metrics %>%
+  select(-w_prime, -cp_quantile)
+
+ggplot(ride_metrics,
+       aes(x = critical_power)) +
+  geom_histogram(binwidth = 5)
+```
+
+Critical power is normally distributed, but it's good practice to standardise the explanatory variables so that they have a mean of zero ("centering") and a standard deviation of one ("scaling"). This ensures that the estimated coefficients are all on the same scale, making it easier to compare effect sizes.
+
+```{r}
+mm_df_scaled <- mm_df %>%
+  mutate_if(is.numeric, scale)
+  
+```
+
+
+### Variable collinearity
+
+##### Create the mixed model
+
+```{r}
+install.packages("eaststats")
+library(easystats)
+
+mixed_lmer <- lmer(critical_power ~ . + (1|id) + (1|gender), data = mm_df_scaled)
+
+mixed_lmer <- lmer(critical_power ~ 1 + . (1|id) + (1|gender), data = mm_df_scaled)
+```
+
+
+```{r}
+
+```
+
