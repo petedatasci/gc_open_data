@@ -29,9 +29,7 @@ library(lme4)
 library(corrr)
 library(GGally)
 ggthemr("fresh")
-set_swatch(swatch_colours)
 
-theme_set(theme_minimal())
 ```
 
 # Read in data
@@ -117,13 +115,15 @@ Apply the `recipes::tidy()` method to the output from `recipes::step_pca()` to e
 
 
 ```{r}
-rides_recipe %>% 
+pca_prep %>% 
   tidy(id = "pca", type = "variance") %>% 
   dplyr::filter(terms == "percent variance") %>%
   ggplot(aes(x = component, y = value)) + 
   geom_col() + 
   xlim(c(0, 5)) + 
   ylab("% of total variance")
+
+ggsave(filename = "pca_perc_variance.png", path = "plots")
 ```
 
 ### Plot PCA loadings
@@ -201,7 +201,7 @@ ggthemr("fresh")
 
 
 pca_plot <-
-  juice(rides_recipe) %>%
+  juice(pca_prep) %>%
   ggplot(aes(PC1, PC2, colour = as.factor(cp_quantile), shape = gender)) +
   geom_point(alpha = 0.6, 
              size = 2) +
@@ -211,6 +211,7 @@ pca_plot <-
 
 pca_plot
 
+ggsave(filename = "pca_plot.png", path = "plots")
 # pca_plot +
 #   geom_segment(data = pca_wider,
 #                aes(xend = PC1, yend = PC2), 
@@ -240,12 +241,16 @@ ggplot(ride_metrics,
   scale_colour_ggthemr_d() +
   labs(colour = "CP Quantile")
 
+ggsave(filename = "vol_vs_intens.png", path = "plots")
+
 # relative intensity vs critical power
 ggplot(ride_metrics,
        aes(x = week_relative_intensity, y = critical_power, colour = gender)) +
          geom_point(alpha = 0.4) +
   geom_smooth(method = "lm",aes(fill = gender)) +
   scale_colour_ggthemr_d()
+
+ggsave(filename = "relintens_vs_cp.png", path = "plots")
 
 ```
 
@@ -294,10 +299,9 @@ library(afex)
 ```
 
 
-### Distribution of response cariable (Critical Power)
+### Distribution of response variable (Critical Power)
 
 ```{r}
-
 # remove unwanted variables
 
 mm_df <- ride_metrics %>%
@@ -308,7 +312,115 @@ ggplot(ride_metrics,
   geom_histogram(binwidth = 5)
 ```
 
-Critical power is normally distributed, but it's good practice to standardise the explanatory variables so that they have a mean of zero ("centering") and a standard deviation of one ("scaling"). This ensures that the estimated coefficients are all on the same scale, making it easier to compare effect sizes.
+Critical power is normally distributed so it does not need any transformations.
+
+### Variable collinearity
+
+The `corvif` function used to determine variable inflations scores is from:
+
+Mixed effects models and extensions in ecology with R. (2009).
+Zuur, AF, Ieno, EN, Walker, N, Saveliev, AA, and Smith, GM. Springer.
+
+
+```{r corvif-function}
+#VIF FUNCTION.
+#To use:  corvif(YourDataFile)
+corvif <- function(dataz) {
+  dataz <- as.data.frame(dataz)
+  #correlation part
+  #cat("Correlations of the variables\n\n")
+  #tmp_cor <- cor(dataz,use="complete.obs")
+  #print(tmp_cor)
+  
+  #vif part
+  form    <- formula(paste("fooy ~ ",paste(strsplit(names(dataz)," "),collapse=" + ")))
+  dataz   <- data.frame(fooy=1,dataz)
+  lm_mod  <- lm(form,dataz)
+  
+  cat("\n\nVariance inflation factors\n\n")
+  print(myvif(lm_mod))
+}
+
+#Support function for corvif. Will not be called by the user
+myvif <- function(mod) {
+  v <- vcov(mod)
+  assign <- attributes(model.matrix(mod))$assign
+  if (names(coefficients(mod)[1]) == "(Intercept)") {
+    v <- v[-1, -1]
+    assign <- assign[-1]
+  } else warning("No intercept: vifs may not be sensible.")
+  terms <- labels(terms(mod))
+  n.terms <- length(terms)
+  if (n.terms < 2) stop("The model contains fewer than 2 terms")
+  if (length(assign) > dim(v)[1] ) {
+    diag(tmp_cor)<-0
+    if (any(tmp_cor==1.0)){
+      return("Sample size is too small, 100% collinearity is present")
+    } else {
+      return("Sample size is too small")
+    }
+  }
+  R <- cov2cor(v)
+  detR <- det(R)
+  result <- matrix(0, n.terms, 3)
+  rownames(result) <- terms
+  colnames(result) <- c("GVIF", "Df", "GVIF^(1/2Df)")
+  for (term in 1:n.terms) {
+    subs <- which(assign == term)
+    result[term, 1] <- det(as.matrix(R[subs, subs])) * det(as.matrix(R[-subs, -subs])) / detR
+    result[term, 2] <- length(subs)
+  }
+  if (all(result[, 2] == 1)) {
+    result <- data.frame(GVIF=result[, 1])
+  } else {
+    result[, 3] <- result[, 1]^(1/(2 * result[, 2]))
+  }
+  invisible(result)
+}
+#END VIF FUNCTIONS
+```
+
+
+```{r run-corvif}
+# Run corvif on ride_metrics
+
+ride_metrics_vif <- ride_metrics %>%
+  select(-id, -cp_quantile,-critical_power)
+
+# corvif output
+ride_corvif <- corvif(ride_metrics_vif)
+
+# create dataframe for plotting
+corvif_res <- ride_corvif %>%
+  as.data.frame() %>%
+  rownames_to_column()
+  
+```
+
+```{r corvif-plot}
+
+corvif_res %>%
+  # arrange by VGIF value. This sorts the dataframe but not the factor levels
+  arrange(GVIF) %>%
+  # Trick to update factor levels
+  mutate(rowname = factor(rowname, levels = rowname)) %>%
+  ggplot(aes(x = rowname, y = GVIF)) +
+  geom_col() +
+  geom_hline(yintercept = 10, linetype = "dashed") +
+  coord_flip() +
+  labs(x = NULL,
+       y = "VIF",
+       title = "Variable inflation factor of GCOD variables",
+       caption = "VIF > 10 is threshold for variable removal")
+
+ggsave(path = "plots", filename = "rides_vif.png")
+
+```
+
+
+
+
+It's good practice to standardise the explanatory variables so that they have a mean of zero ("centering") and a standard deviation of one ("scaling"). This ensures that the estimated coefficients are all on the same scale, making it easier to compare effect sizes.
 
 ```{r}
 mm_df_scaled <- mm_df %>%
@@ -317,7 +429,7 @@ mm_df_scaled <- mm_df %>%
 ```
 
 
-### Variable collinearity
+
 
 ##### Create the mixed model
 
