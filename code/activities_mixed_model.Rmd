@@ -29,6 +29,7 @@ library(lme4)
 library(corrr)
 library(GGally)
 ggthemr("fresh")
+library(parameters)
 
 ```
 
@@ -119,7 +120,9 @@ pca_prep %>%
   tidy(id = "pca", type = "variance") %>% 
   dplyr::filter(terms == "percent variance") %>%
   ggplot(aes(x = component, y = value)) + 
-  geom_col() + 
+  geom_col() +
+  scale_y_continuous(limits = c(0,30),
+                     breaks = seq(0,30, by = 5)) +
   xlim(c(0, 5)) + 
   ylab("% of total variance")
 
@@ -296,20 +299,32 @@ remove(arrow_style, pca_plot, pca_prep, pca_recipe, pca_wider, rides_pre_pca, ri
 ```{r}
 library(lme4)
 library(afex)
+gc()
 ```
 
 
 ### Distribution of response variable (Critical Power)
 
+Distribution described with `describe_distribution()`:
+
+Lüdecke D, Ben-Shachar M, Patil I, Makowski D (2020). “Extracting,
+Computing and Exploring the Parameters of Statistical Models using R.”
+_Journal of Open Source Software_, *5*(53), 2445. doi: 10.21105/joss.02445
+(URL: https://doi.org/10.21105/joss.02445).
+
 ```{r}
 # remove unwanted variables
 
-mm_df <- ride_metrics %>%
+pre_mm_df <- ride_metrics %>%
   select(-w_prime, -cp_quantile)
 
 ggplot(ride_metrics,
        aes(x = critical_power)) +
   geom_histogram(binwidth = 5)
+
+describe_distribution(pre_mm_df$critical_power)
+
+citation("parameters")
 ```
 
 Critical power is normally distributed so it does not need any transformations.
@@ -417,33 +432,91 @@ ggsave(path = "plots", filename = "rides_vif.png")
 
 ```
 
+I need to remove the variables that have VIF values > 10 as they have high collinearity and i also need to provide numeric user ID so that `id` is a factor for the mixed model
 
+```{r}
+model_df <- pre_mm_df %>%
+  select(-week_total_distance, -week_total_work, -week_average_power) %>%
+  # make id a factor variable
+  group_by(id) %>%
+  mutate(id = as.factor(id),
+         gender = as.factor(gender)) %>%
+  ungroup()
+```
 
 
 It's good practice to standardise the explanatory variables so that they have a mean of zero ("centering") and a standard deviation of one ("scaling"). This ensures that the estimated coefficients are all on the same scale, making it easier to compare effect sizes.
 
 ```{r}
-mm_df_scaled <- mm_df %>%
-  mutate_if(is.numeric, scale)
-  
+model_df_scaled <- model_df %>%
+  mutate_at(vars("week_total_workout_time":"rides_per_quarter"), scale)
 ```
-
-
 
 
 ##### Create the mixed model
 
 ```{r}
-install.packages("eaststats")
+remove(model_df)
+remove(pre_mm_df)
+remove(ride_metrics)
+```
+
+
+**Create training and testing data**
+```{r}
+library(caret)
+
+set.seed(123) #randomization
+
+#creating indices
+trainIndex <- createDataPartition(model_df_scaled$critical_power,p=0.75,list=FALSE)
+
+#splitting data into training/testing data using the trainIndex object
+model_train <- model_df_scaled[trainIndex,] #training data (75% of data)
+
+model_test <- model_df_scaled[-trainIndex,] #testing data (25% of data)
+```
+
+**Run model**
+```{r}
 library(easystats)
 
-mixed_lmer <- lmer(critical_power ~ . + (1|id) + (1|gender), data = mm_df_scaled)
-
-mixed_lmer <- lmer(critical_power ~ 1 + . (1|id) + (1|gender), data = mm_df_scaled)
+mixed_lmer <- lmer(critical_power ~ . -year -id + (1|year) + (1|id), data = model_train)
 ```
 
+This model failed to converge. The first thing we'll do is try the `all_fit()` function from the afex package to look for an optimizer that works.
+
+**Search for optimiser package**
+```{r}
+all_fit(mixed_lmer)
+```
+
+**Re-run model with optimiser**
 
 ```{r}
+mixed_lmer <- lmer(critical_power ~ . -year -id + (1|year) + (1|id), data = model_train,
+                   control = lmerControl(optimizer = "bobyqa"))
 
+options(scipen = 999)  # turn off scientific notation
+summary(mixed_lmer)
 ```
 
+*The random effects part tells you how much variance you find among levels of your grouping factor(s), plus residual variance*.
+
+*The fixed effect part is very similar to a linear model output: intercept & error, slope estimate & error*.
+
+We can see that the variance in id is 174, which means that user id is very important and explains a lot of the variance, which we'll not be able to explain:
+* training history
+* genetics
+* location
+* performance level
+
+We can look at how much user ID explains the variance in critical power by taking the variance for `id` and dividing it by the total variance:
+
+```{r}
+174.3/(174.3 + 6.3 + 172.2)
+```
+
+So the differences between `id` explains ~ 49% of the variance that's 'left over' *after* the variance explain by our fixed effects.
+
+Once we account for year and user id, there are still MANY statistically significant predictors of critical power. But when looking at the estiamte values, it appears to be that `coggan_np` and `week_relative_intensity` look to be 
