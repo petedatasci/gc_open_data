@@ -40,6 +40,13 @@ activities <- read_csv("data/activities.csv") %>%
 
 ```
 
+
+Training phases:
+* Nove - Jan = 1
+* Feb - Apr = 2
+* May - Jul 3
+* Aug - Oct - 4
+
 ```{r}
 
 # Create date variables
@@ -50,10 +57,10 @@ activities_var <- activities %>%
          week = week(date),
          month = as.numeric(format(date, "%m")),
          # pre/early/mid/late-season
-         training_phase = case_when(month %in% 11:1 ~ 1,
-                                    month %in% 2:4 ~ 2,
-                                    month %in% 5:7 ~ 3,
-                                    month %in% 8:10 ~ 4),
+         training_phase = case_when(between(month, 2, 4) ~ 2,
+                                    between(month, 5, 7) ~ 3,
+                                    between(month, 8, 10) ~ 4,
+                                    TRUE ~ 1),
          # convert workout duration to minutes
          workout_time_min = workout_time/60) %>%
   # remove dates that failed to parse (contained weird characters)
@@ -103,6 +110,7 @@ Create additional or mutate existing variables to assist in filtering and initia
 
 ```{r filter-data}
 activities_filtered <- activities_var %>%
+  select(-X34) %>%
   # 2015 onwards - coincides with larger increases in activity uploads
   filter(year >= 2015) %>%
   # standard for research
@@ -134,7 +142,7 @@ activities_filtered <- activities_var %>%
 ##### Number of activites per individual
 
 ```{r number-of-rides-dists}
-# how many rides do individuals do per week/quarter
+# how many rides do individuals do per week/phase
 
 ## dummy column for cumulative count
 activities_filtered$rec <- 1
@@ -166,18 +174,18 @@ activities_total_rides %>%
   labs(title = "How many activites do individual users upload?",
        x = "Number of rides uploaded") 
 
-# per quarter histogram
+# per phase histogram
 activities_total_rides %>%
   group_by(id) %>%
-  summarise(mean_rides_per_quarter = mean(rides_per_quarter)) %>%
+  summarise(mean_rides_per_phase = mean(rides_per_phase)) %>%
   ungroup() %>%
-  ggplot(aes(x = mean_rides_per_quarter)) +
+  ggplot(aes(x = mean_rides_per_phase)) +
   geom_histogram(binwidth = 1) +
   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
   coord_cartesian(xlim = c(0, 250)) +
   scale_x_continuous(breaks = seq(0,250, by = 25)) +
-  labs(title = "How many rides do people do per quarter?",
-       x = "Number of rides per quarter")
+  labs(title = "How many rides do people do per phase?",
+       x = "Number of rides per phase")
 
 # per week histogram
 activities_total_rides %>%
@@ -196,15 +204,14 @@ activities_total_rides %>%
   
 ```
 
-##### Quarterly best MMPs
+##### Phase best MMPs
 
-```{r quarter-best-mmp}
-# Extract best MMP values for each quarter per year 
+```{r phase-best-mmp}
+# Extract best MMP values for each yearly training phase
 activities_phases <- activities_filtered %>%
   group_by(id,year,training_phase) %>%
   summarise(across(c(`3m_critical_power`:`10m_critical_power`), max),.groups = "keep")
 
-# Bring back age and gender
 ```
 
 
@@ -296,22 +303,21 @@ remove(activities_phases_nest)
 remove(cp_model)
 ```
 
-##### Quarterly training metrics
+##### Training phase metrics
 
 ```{r cp-quartiles + hw-pwr-ratio }
 rides <- activities_cp %>%
   relocate(year:`30m_critical_power`,
            .after = where(is.character)) %>%
   mutate(year = as.factor(year)) %>%
-  mutate(quarter = as.factor(training_phase)) %>%
+  mutate(training_phase = as.factor(training_phase)) %>%
   mutate(week = as.factor(week)) %>%
   mutate(cp_quantile = ntile(critical_power,4)) %>%
-  mutate(pwr_hr_ratio = average_power / average_hr) %>%
-  select(-X34)
+  mutate(pwr_hr_ratio = average_power / average_hr)
 ```
 
 
-```{r calculate rides per week/quarter}
+```{r calculate rides per week/phase}
 
 rides_weekly <- rides %>%
   group_by(id, year, week) %>%
@@ -389,17 +395,17 @@ weekly_metrics <- full_join(week_total_volume_2, week_avg_int, by = c("id", "yea
 ```
 
 
-```{r metrics-quarter}
+```{r metrics-phase}
 
-quarter_metrics <- weekly_metrics %>%
+phase_metrics <- weekly_metrics %>%
   group_by(id,year,training_phase) %>%
   summarise(across(c(week_total_workout_time:week_pwr_hr_ratio), ~ mean(.x, na.rm = TRUE)),.groups = "keep") %>%
   ungroup() %>%
   rename(mean_weekly_rides = rides_per_week)
 
-# merge with rides_quarterly df to include total rides per quarter
+# merge with phase_metrics df to include total rides per quarter
 
-quarter_metrics_2 <- quarter_metrics %>%
+phase_metrics_2 <- phase_metrics %>%
   left_join(rides_per_phase, by = c("id","year","training_phase"))
 
 # add cp metrics to rides dataframe
@@ -407,10 +413,10 @@ cp_metrics <- rides %>%
   select(id,age,year,training_phase, gender,critical_power,w_prime,critical_power_error,w_prime_error,cp_quantile) %>%
   unique()
 
-ride_metrics <- full_join(quarter_metrics_2, cp_metrics, by = c("id","year","training_phase")) 
+ride_metrics <- full_join(phase_metrics_2, cp_metrics, by = c("id","year","training_phase")) 
 
 
-# %>% drop_na()
+
 
 ``` 
 
