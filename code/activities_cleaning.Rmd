@@ -32,21 +32,40 @@ ggthemr("fresh")
 
 ##### Read data
 ```{r read-data}
-activities <- read_csv("data/activities.csv")
+activities <- read_csv("data/activities.csv") %>%
+  filter(sport == "Bike")
+
+
 
 
 ```
 
 ```{r}
 
-# Add additional variables
+# Create date variables
+
 activities_var <- activities %>%
   mutate(date = as_date(date),
-                year = year(date),
-                quarter = quarter(date),
-                week = week(date)) %>%
-  # convert workout duration to minutes
-  mutate(workout_time_min = workout_time/60)
+         year = year(date),
+         week = week(date),
+         month = as.numeric(format(date, "%m")),
+         # pre/early/mid/late-season
+         training_phase = case_when(month %in% 11:1 ~ 1,
+                                    month %in% 2:4 ~ 2,
+                                    month %in% 5:7 ~ 3,
+                                    month %in% 8:10 ~ 4),
+         # convert workout duration to minutes
+         workout_time_min = workout_time/60) %>%
+  # remove dates that failed to parse (contained weird characters)
+  drop_na(date)
+
+# activities_var <- activities %>%
+#   mutate(date = as_date(date),
+#                 year = year(date),
+#                 quarter = quarter(date),
+#                 week = week(date)) %>%
+#   # convert workout duration to minutes
+#   mutate(workout_time_min = workout_time/60)
 
 ```
 
@@ -57,7 +76,6 @@ options(scipen = 999)
 
 # View number of uploaded activities per year
 activities_var %>%
-  filter(sport == "Bike") %>%
   ggplot(aes(x = factor(year))) +
   geom_histogram(binwidth = 1, stat = "count") +
   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
@@ -85,10 +103,6 @@ Create additional or mutate existing variables to assist in filtering and initia
 
 ```{r filter-data}
 activities_filtered <- activities_var %>%
-  # keep only bike activities
-  filter(sport == "Bike") %>%
-  # keep only females
-  # filter(gender == "M") %>%
   # 2015 onwards - coincides with larger increases in activity uploads
   filter(year >= 2015) %>%
   # standard for research
@@ -137,8 +151,9 @@ activities_total_rides <- activities_ride_no %>%
   group_by(id, year,week) %>%
   mutate(rides_per_week = sum(rec)) %>%
   ungroup() %>%
-  group_by(id, year, quarter) %>%
-  mutate(rides_per_quarter = sum(rec)) %>%
+  # rides per phase
+  group_by(id, year, training_phase) %>%
+  mutate(rides_per_phase = sum(rec)) %>%
   ungroup()
 
 # how many rides do individuals upload in total?
@@ -185,8 +200,8 @@ activities_total_rides %>%
 
 ```{r quarter-best-mmp}
 # Extract best MMP values for each quarter per year 
-activities_quarters <- activities_filtered %>%
-  group_by(id,year,quarter) %>%
+activities_phases <- activities_filtered %>%
+  group_by(id,year,training_phase) %>%
   summarise(across(c(`3m_critical_power`:`10m_critical_power`), max),.groups = "keep")
 
 # Bring back age and gender
@@ -198,7 +213,7 @@ activities_quarters <- activities_filtered %>%
 ```{r critical-power}
 library(tidymodels)
 # Convert to long format
-activities_quarters_long <- activities_quarters %>%
+activities_phases_long <- activities_phases %>%
   dplyr::rename(`180` = `3m_critical_power`,
                 `300` = `5m_critical_power`,
                 `480` = `8m_critical_power`,
@@ -209,12 +224,12 @@ activities_quarters_long <- activities_quarters %>%
   drop_na()
 
 # Nest model data 
-activities_quarters_nest <- activities_quarters_long %>%
-  group_by(id,year,quarter) %>%
+activities_phases_nest <- activities_phases_long %>%
+  group_by(id,year,training_phase) %>%
   nest(data = c(duration_s,power_output,work_done))
 
 # iterate linear cp model
-cp_model <- activities_quarters_nest %>%
+cp_model <- activities_phases_nest %>%
   mutate(model = map(data, ~lm(work_done ~ duration_s, data = .x)))
 
 ## iterate over the model with the function tidy (which puts lm output into tidy format) & unnest coeffs to extract cp & wprime into separate columns
@@ -225,7 +240,7 @@ activities_cp <- cp_model %>%
     coefs = broom::tidy(model) %>% list()
   ) %>% 
   ungroup() %>% 
-  select(id, year,quarter,coefs) %>% 
+  select(id, year,training_phase ,coefs) %>% 
   unnest(cols = coefs) %>% 
   mutate(
     term = ifelse(term == "(Intercept)", "w_prime", "critical_power")
@@ -239,7 +254,7 @@ activities_cp <- cp_model %>%
   pivot_wider(names_from = term) %>% 
   left_join(x = activities_filtered, 
             y = .,
-            by = c("id", "year","quarter")) %>% 
+            by = c("id", "year","training_phase")) %>% 
   ## Remove dodgy wprime and cp values
   filter(w_prime > 1000,
          w_prime < 50000) %>%
@@ -275,9 +290,9 @@ ggsave(path = "plots", filename = "wprime_dist.png")
 remove(activities)
 remove(activities_var)
 remove(activities_filtered)
-remove(activities_quarters)
-remove(activities_quarters_long)
-remove(activities_quarters_nest)
+remove(activities_phases)
+remove(activities_phases_long)
+remove(activities_phases_nest)
 remove(cp_model)
 ```
 
@@ -288,7 +303,7 @@ rides <- activities_cp %>%
   relocate(year:`30m_critical_power`,
            .after = where(is.character)) %>%
   mutate(year = as.factor(year)) %>%
-  mutate(quarter = as.factor(quarter)) %>%
+  mutate(quarter = as.factor(training_phase)) %>%
   mutate(week = as.factor(week)) %>%
   mutate(cp_quantile = ntile(critical_power,4)) %>%
   mutate(pwr_hr_ratio = average_power / average_hr) %>%
@@ -300,11 +315,11 @@ rides <- activities_cp %>%
 
 rides_weekly <- rides %>%
   group_by(id, year, week) %>%
-  summarise(rides_per_week = n())
+  summarise(rides_per_week = n(), .groups = "keep")
 
-rides_quarterly <- rides %>%
-  group_by(id,year,quarter) %>%
-  summarise(rides_per_quarter = n())
+rides_per_phase <- rides %>%
+  group_by(id,year,training_phase) %>%
+  summarise(rides_per_phase = n(), .groups = "keep")
 
 ```
 
@@ -342,7 +357,7 @@ ggsave(path = "plots", filename = "cp_quartile_dist.png")
 ```{r volume-by-week}
 # Weekly training metrics
 week_total_volume <- rides %>%
-  group_by(id,year,quarter,week) %>%
+  group_by(id,year,training_phase,week) %>%
   summarise(across(c("workout_time_min","total_distance","elevation_gain","total_work", "coggan_tss"), ~sum(.x, na.rm = TRUE),.names = "week_{.col}"),.groups = "keep") %>%
   dplyr::rename(week_total_workout_time = week_workout_time_min,
                 week_total_elevation_gain = week_elevation_gain,
@@ -362,7 +377,7 @@ week_avg_int <- rides %>%
   # calculate relative session intensity
   mutate(relative_intensity = average_power / critical_power) %>%
   # calculate weekly averages
-  group_by(id,year,quarter,week) %>%
+  group_by(id,year,training_phase,week) %>%
   summarise(across(c(average_speed:coggan_if,relative_intensity,pwr_hr_ratio), ~ mean(.x, na.rm = TRUE),.names = "week_{.col}"),.groups = "keep") %>%
   ungroup()
 ```
@@ -370,14 +385,14 @@ week_avg_int <- rides %>%
 
 
 ```{r all-week-metrics}
-weekly_metrics <- full_join(week_total_volume_2, week_avg_int, by = c("id", "year", "quarter", "week"))
+weekly_metrics <- full_join(week_total_volume_2, week_avg_int, by = c("id", "year", "training_phase", "week"))
 ```
 
 
 ```{r metrics-quarter}
 
 quarter_metrics <- weekly_metrics %>%
-  group_by(id,year,quarter) %>%
+  group_by(id,year,training_phase) %>%
   summarise(across(c(week_total_workout_time:week_pwr_hr_ratio), ~ mean(.x, na.rm = TRUE)),.groups = "keep") %>%
   ungroup() %>%
   rename(mean_weekly_rides = rides_per_week)
@@ -385,14 +400,14 @@ quarter_metrics <- weekly_metrics %>%
 # merge with rides_quarterly df to include total rides per quarter
 
 quarter_metrics_2 <- quarter_metrics %>%
-  left_join(rides_quarterly, by = c("id","year","quarter"))
+  left_join(rides_per_phase, by = c("id","year","training_phase"))
 
 # add cp metrics to rides dataframe
 cp_metrics <- rides %>%
-  select(id,age,year,quarter, gender,critical_power,w_prime,critical_power_error,w_prime_error,cp_quantile) %>%
+  select(id,age,year,training_phase, gender,critical_power,w_prime,critical_power_error,w_prime_error,cp_quantile) %>%
   unique()
 
-ride_metrics <- full_join(quarter_metrics_2, cp_metrics, by = c("id","year","quarter")) 
+ride_metrics <- full_join(quarter_metrics_2, cp_metrics, by = c("id","year","training_phase")) 
 
 
 # %>% drop_na()
@@ -403,7 +418,7 @@ ride_metrics <- full_join(quarter_metrics_2, cp_metrics, by = c("id","year","qua
 
 **Weekly average training volume and intensity by quartile**
 
-Weekly averages are calculated per quarter (3 month period)
+Weekly averages are calculated per training phase (3 month period)
 
 ```{r metrics-vis-1}
 ggplot(ride_metrics,
