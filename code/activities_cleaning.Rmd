@@ -18,12 +18,12 @@ knitr::opts_chunk$set(cache = TRUE, warning = FALSE,
 ## Libraries
 ```{r}
 library(tidyverse)
-library(readr)
 library(janitor)
 library(readxl)
 library(lubridate)
 library(ggthemr)
 ggthemr("fresh")
+
 
 ```
 
@@ -35,17 +35,11 @@ ggthemr("fresh")
 activities <- read_csv("data/activities.csv") %>%
   filter(sport == "Bike")
 
-
-
-
 ```
 
 
-Training phases:
-* Nove - Jan = 1
-* Feb - Apr = 2
-* May - Jul 3
-* Aug - Oct - 4
+
+* add in training season and training phases:
 
 ```{r}
 
@@ -54,40 +48,50 @@ Training phases:
 activities_var <- activities %>%
   mutate(date = as_date(date),
          year = year(date),
-         week = week(date),
-         month = as.numeric(format(date, "%m")),
-         # pre/early/mid/late-season
-         training_phase = case_when(between(month, 2, 4) ~ 2,
+         # week = week(date),
+         month = as.numeric(format(date, "%m"))) %>%
+  # create seasons
+  mutate(season = case_when(date >= ymd("2015-11-01") & date <= ymd("2016-10-31") ~ "15/16",
+                            date >= ymd("2016-11-01") & date <= ymd("2017-10-31") ~ "16/17",
+                            date >= ymd("2017-11-01") & date <= ymd("2018-10-31") ~ "17/18",
+                            date >= ymd("2018-11-01") & date <= ymd("2019-10-31") ~ "18/19",
+                            date >= ymd("2019-11-01") & date <= ymd("2020-10-31") ~ "19/20",
+                            TRUE ~ "NA")
+  ) %>%
+  
+  # pre/early/mid/late-season
+  mutate(training_phase = case_when(between(month, 2, 4) ~ 2,
                                     between(month, 5, 7) ~ 3,
                                     between(month, 8, 10) ~ 4,
-                                    TRUE ~ 1),
-         # convert workout duration to minutes
-         workout_time_min = workout_time/60) %>%
-  # remove dates that failed to parse (contained weird characters)
-  drop_na(date)
-
-# activities_var <- activities %>%
-#   mutate(date = as_date(date),
-#                 year = year(date),
-#                 quarter = quarter(date),
-#                 week = week(date)) %>%
-#   # convert workout duration to minutes
-#   mutate(workout_time_min = workout_time/60)
-
+                                    TRUE ~ 1)) %>%
+  # convert workout duration from seconds to hours
+  mutate(workout_time = workout_time/3600) %>%
+  # remove seasons prior to 15/16
+  filter(season != "NA")
 ```
+
+Training season runs from 01/11 - 31/10 each year.
+
+Training phases:
+* Nov - Jan = 1 (pre-season)
+* Feb - Apr = 2 (early-season)
+* May - Jul 3 (mid-season)
+* Aug - Oct = 4 (late season)
 
 ##### Data Distributions
 
-```{r activities-per-year-vis}
+```{r activities-per-season}
 options(scipen = 999)
 
-# View number of uploaded activities per year
+# View number of uploaded activities per season
 activities_var %>%
-  ggplot(aes(x = factor(year))) +
-  geom_histogram(binwidth = 1, stat = "count") +
+  ggplot(aes(x = factor(season))) +
+  geom_bar() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-  labs(title = "Total number of cycling activities uploaded per year",
-       x = "Year") 
+  labs(x = "Season",
+       y = "Count") 
+
+ggsave(path = "plots", filename = "activities_per_season.png")
   
 ```
 
@@ -100,7 +104,7 @@ activities %>%
 activities %>%
   group_by(gender) %>%
   summarise(count = n() ) %>%
-  mutate( prop = count / sum(count) )
+  mutate(prop = count / sum(count) )
 
 ```
 
@@ -108,15 +112,15 @@ activities %>%
 
 Create additional or mutate existing variables to assist in filtering and initial plotting
 
+
+
 ```{r filter-data}
 activities_filtered <- activities_var %>%
   select(-X34) %>%
-  # 2015 onwards - coincides with larger increases in activity uploads
-  filter(year >= 2015) %>%
   # standard for research
   filter(age >= 18 & age <= 60) %>%
   # remove workout_time less than 10 seconds and more than 12 hours
-  filter(workout_time >= 10 & workout_time <= 43200) %>%
+  filter(workout_time >= 10/3600 & workout_time <= 12.0) %>%
   # remove speed > 65 kph (pro cyclist max sprint speed)
   filter(average_speed <= 65) %>%
   # indicate virtual power algorithm
@@ -142,25 +146,25 @@ activities_filtered <- activities_var %>%
 ##### Number of activites per individual
 
 ```{r number-of-rides-dists}
-# how many rides do individuals do per week/phase
+# how many rides do individuals do per /phase
 
 ## dummy column for cumulative count
 activities_filtered$rec <- 1
 
-activities_ride_no <- activities_filtered %>%
+activities_ride_count <- activities_filtered %>%
   arrange(date) %>%
   group_by(id) %>%
   mutate(ride_count = cumsum(rec)) %>%
   ungroup()
 
 
-activities_total_rides <- activities_ride_no %>%
-  # rides per week
-  group_by(id, year,week) %>%
-  mutate(rides_per_week = sum(rec)) %>%
-  ungroup() %>%
+activities_total_rides <- activities_ride_count %>%
+  # # rides per week
+  # group_by(id, year, week) %>%
+  # mutate(rides_per_week = sum(rec)) %>%
+  # ungroup() %>%
   # rides per phase
-  group_by(id, year, training_phase) %>%
+  group_by(id, season, training_phase) %>%
   mutate(rides_per_phase = sum(rec)) %>%
   ungroup()
 
@@ -187,29 +191,29 @@ activities_total_rides %>%
   labs(title = "How many rides do people do per phase?",
        x = "Number of rides per phase")
 
-# per week histogram
-activities_total_rides %>%
-  group_by(id) %>%
-  summarise(mean_rides_per_week = mean(rides_per_week)) %>%
-  ungroup() %>%
-  ggplot(aes(x = mean_rides_per_week)) +
-  geom_histogram(binwidth = 1) +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-  coord_cartesian(xlim = c(0, 20)) +
-  scale_x_continuous(breaks = seq(0,20, by = 1)) +
-  labs(title = "How many rides do people do per week?",
-       x = "Number of rides per week")
+# # per week histogram
+# activities_total_rides %>%
+#   group_by(id) %>%
+#   summarise(mean_rides_per_week = mean(rides_per_week)) %>%
+#   ungroup() %>%
+#   ggplot(aes(x = mean_rides_per_week)) +
+#   geom_histogram(binwidth = 1) +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+#   coord_cartesian(xlim = c(0, 20)) +
+#   scale_x_continuous(breaks = seq(0,20, by = 1)) +
+#   labs(title = "How many rides do people do per week?",
+#        x = "Number of rides per week")
 
 
-  
+
 ```
 
 ##### Phase best MMPs
 
 ```{r phase-best-mmp}
 # Extract best MMP values for each yearly training phase
-activities_phases <- activities_filtered %>%
-  group_by(id,year,training_phase) %>%
+phase_mmps <- activities_filtered %>%
+  group_by(id,season,training_phase) %>%
   summarise(across(c(`3m_critical_power`:`10m_critical_power`), max),.groups = "keep")
 
 ```
@@ -217,10 +221,9 @@ activities_phases <- activities_filtered %>%
 
 ##### Critical power model
 
-```{r critical-power}
-library(tidymodels)
+```{r critical-power-model}
 # Convert to long format
-activities_phases_long <- activities_phases %>%
+phase_mmps_long <- phase_mmps %>%
   dplyr::rename(`180` = `3m_critical_power`,
                 `300` = `5m_critical_power`,
                 `480` = `8m_critical_power`,
@@ -231,12 +234,12 @@ activities_phases_long <- activities_phases %>%
   drop_na()
 
 # Nest model data 
-activities_phases_nest <- activities_phases_long %>%
-  group_by(id,year,training_phase) %>%
+phase_mmps_nest <- phase_mmps_long %>%
+  group_by(id,season,training_phase) %>%
   nest(data = c(duration_s,power_output,work_done))
 
 # iterate linear cp model
-cp_model <- activities_phases_nest %>%
+cp_model <- phase_mmps_nest %>%
   mutate(model = map(data, ~lm(work_done ~ duration_s, data = .x)))
 
 ## iterate over the model with the function tidy (which puts lm output into tidy format) & unnest coeffs to extract cp & wprime into separate columns
@@ -247,7 +250,7 @@ activities_cp <- cp_model %>%
     coefs = broom::tidy(model) %>% list()
   ) %>% 
   ungroup() %>% 
-  select(id, year,training_phase ,coefs) %>% 
+  select(id, season,training_phase ,coefs) %>% 
   unnest(cols = coefs) %>% 
   mutate(
     term = ifelse(term == "(Intercept)", "w_prime", "critical_power")
@@ -261,8 +264,8 @@ activities_cp <- cp_model %>%
   pivot_wider(names_from = term) %>% 
   left_join(x = activities_filtered, 
             y = .,
-            by = c("id", "year","training_phase")) %>% 
-  ## Remove dodgy wprime and cp values
+            by = c("id", "season","training_phase")) %>% 
+  ## Remove extreme wprime and CP values
   filter(w_prime > 1000,
          w_prime < 50000) %>%
   filter(critical_power > 100,
@@ -294,38 +297,35 @@ ggsave(path = "plots", filename = "wprime_dist.png")
 ##### Remove unwanted data frames
 
 ```{r}
-remove(activities)
-remove(activities_var)
-remove(activities_filtered)
-remove(activities_phases)
-remove(activities_phases_long)
-remove(activities_phases_nest)
-remove(cp_model)
+
 ```
 
 ##### Training phase metrics
 
 ```{r cp-quartiles + hw-pwr-ratio }
+
 rides <- activities_cp %>%
-  relocate(year:`30m_critical_power`,
-           .after = where(is.character)) %>%
-  mutate(year = as.factor(year)) %>%
+  select(-contains(c("wpk", "_critical")), - data, -file,) %>%
+  mutate(season = as.factor(season)) %>%
   mutate(training_phase = as.factor(training_phase)) %>%
-  mutate(week = as.factor(week)) %>%
+  #mutate(week = as.factor(week)) %>%
   mutate(cp_quantile = ntile(critical_power,4)) %>%
-  mutate(pwr_hr_ratio = average_power / average_hr)
+  mutate(pwr_hr_ratio = average_power / average_hr) %>%
+  mutate(relative_intensity = average_power / critical_power) %>%
+  mutate(np_relative_intensity = coggan_np / critical_power) %>%
+  mutate(np_hr_ratio = coggan_np / average_hr)
 ```
 
 
 ```{r calculate rides per week/phase}
 
-rides_weekly <- rides %>%
-  group_by(id, year, week) %>%
-  summarise(rides_per_week = n(), .groups = "keep")
+# rides_weekly <- rides %>%
+#   group_by(id, year, week) %>%
+#   summarise(rides_per_week = n(), .groups = "keep")
 
 rides_per_phase <- rides %>%
-  group_by(id,year,training_phase) %>%
-  summarise(rides_per_phase = n(), .groups = "keep")
+  group_by(id,season,training_phase) %>%
+  summarise(rides_per_phase = sum(rec), .groups = "keep")
 
 ```
 
@@ -350,88 +350,101 @@ ggplot(rides, aes(x = as.factor(cp_quantile), y = critical_power)) +
     width = 0.25,
     outlier.shape = NA
   ) +
-  labs(title = "Critical power quartiles",
-       x = "Quartile",
+  labs(x = "Quartile",
        y = "Critical Power (W)")
 
-ggsave(path = "plots", filename = "cp_quartile_dist.png")
+ggsave(path = "plots", filename = "cp_quartile_boxplot.png")
 
 
 ```
 
 
 ```{r volume-by-week}
-# Weekly training metrics
-week_total_volume <- rides %>%
-  group_by(id,year,training_phase,week) %>%
-  summarise(across(c("workout_time_min","total_distance","elevation_gain","total_work", "coggan_tss"), ~sum(.x, na.rm = TRUE),.names = "week_{.col}"),.groups = "keep") %>%
-  dplyr::rename(week_total_workout_time = week_workout_time_min,
-                week_total_elevation_gain = week_elevation_gain,
-                week_total_tss = week_coggan_tss) %>%
-  ungroup()
-
-
-# Join week_total_volume with rides_weekly
-
-week_total_volume_2 <- week_total_volume %>%
-  left_join(rides_weekly,by = c("id", "year","week"))
+# # Weekly training metrics
+# week_total_volume <- rides %>%
+#   group_by(id,year,training_phase,week) %>%
+#   summarise(across(c("workout_time_min","total_distance","elevation_gain","total_work", "coggan_tss"), ~sum(.x, na.rm = TRUE),.names = "week_{.col}"),.groups = "keep") %>%
+#   dplyr::rename(week_total_workout_time = week_workout_time_min,
+#                 week_total_elevation_gain = week_elevation_gain,
+#                 week_total_tss = week_coggan_tss) %>%
+#   ungroup()
+# 
+# 
+# # Join week_total_volume with rides_weekly
+# 
+# week_total_volume_2 <- week_total_volume %>%
+#   left_join(rides_weekly,by = c("id", "year","week"))
   
 ```
 
 ```{r intensity-by-week}
-week_avg_int <- rides %>%
-  # calculate relative session intensity
-  mutate(relative_intensity = average_power / critical_power) %>%
-  # calculate weekly averages
-  group_by(id,year,training_phase,week) %>%
-  summarise(across(c(average_speed:coggan_if,relative_intensity,pwr_hr_ratio), ~ mean(.x, na.rm = TRUE),.names = "week_{.col}"),.groups = "keep") %>%
-  ungroup()
+# week_avg_int <- rides %>%
+#   # calculate relative session intensity
+#   mutate(relative_intensity = average_power / critical_power) %>%
+#   # calculate weekly averages
+#   group_by(id,year,training_phase,week) %>%
+#   summarise(across(c(average_speed:coggan_if,relative_intensity,pwr_hr_ratio), ~ mean(.x, na.rm = TRUE),.names = "week_{.col}"),.groups = "keep") %>%
+#   ungroup()
 ```
 
 
 
 ```{r all-week-metrics}
-weekly_metrics <- full_join(week_total_volume_2, week_avg_int, by = c("id", "year", "training_phase", "week"))
+# weekly_metrics <- full_join(week_total_volume_2, week_avg_int, by = c("id", "year", "training_phase", "week"))
+```
+
+```{r phase-metrics}
+
+phase_totals <- rides %>%
+  select(id, season, training_phase, workout_time, total_distance, elevation_gain, total_work) %>%
+  group_by(id,season,training_phase) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE), .groups = "keep") %>%
+  ungroup()
+
+phase_totals <- full_join(phase_totals, rides_per_phase, by = c("id", "season", "training_phase"))
+
+phase_averages <- rides %>%
+  select(id,season, training_phase, average_speed, average_power, average_hr, average_cad, coggan_np, coggam_variability_index, coggan_if, coggan_tss, pwr_hr_ratio, np_hr_ratio,relative_intensity, np_relative_intensity) %>%
+  group_by(id,season,training_phase) %>%
+  summarise(across(where(is.numeric), mean, na.rm = TRUE), .groups = "keep") %>%
+  ungroup()
+
+# merge
+
+phase_metrics <- left_join(phase_totals,phase_averages, by = c("id", "season", "training_phase"))
+
 ```
 
 
-```{r metrics-phase}
 
-phase_metrics <- weekly_metrics %>%
-  group_by(id,year,training_phase) %>%
-  summarise(across(c(week_total_workout_time:week_pwr_hr_ratio), ~ mean(.x, na.rm = TRUE)),.groups = "keep") %>%
-  ungroup() %>%
-  rename(mean_weekly_rides = rides_per_week)
-
-# merge with phase_metrics df to include total rides per quarter
-
-phase_metrics_2 <- phase_metrics %>%
-  left_join(rides_per_phase, by = c("id","year","training_phase"))
+```{r cp-metrics}
 
 # add cp metrics to rides dataframe
 cp_metrics <- rides %>%
-  select(id,age,year,training_phase, gender,critical_power,w_prime,critical_power_error,w_prime_error,cp_quantile) %>%
+  select(id,age,season,training_phase, gender,critical_power,w_prime,critical_power_error,w_prime_error,cp_quantile) %>%
   unique()
-
-ride_metrics <- full_join(phase_metrics_2, cp_metrics, by = c("id","year","training_phase")) 
-
-
-
 
 ``` 
 
+
+```{r merg-phase-and-cp}
+phase_complete <- full_join(phase_metrics, cp_metrics, by = c("id","season","training_phase"))
+```
+
+
 ###### Training metric plots
 
-**Weekly average training volume and intensity by quartile**
+**Metrics by training phase**
 
-Weekly averages are calculated per training phase (3 month period)
+Phase averages are calculated per training phase (3 month period)
 
 ```{r metrics-vis-1}
-ggplot(ride_metrics,
-       aes(x = week_total_workout_time)) +
+ggplot(phase_complete,
+       aes(x = workout_time)) +
   geom_histogram(binwidth = 15) +
-  labs(title = "Weekly training duration",
-       x = "Weekly training duration (minutes)")
+  labs(title = "Average training duration during",
+       x = "Average training duration (hours)") +
+  coord_cartesian(xlim = c(0,250))
 
 ggsave(path = "plots", filename = "training_mins_dist.png")
 
@@ -440,18 +453,18 @@ ggsave(path = "plots", filename = "training_mins_dist.png")
 
 ```{r metrics-vis-2}
 
-ggplot(ride_metrics,
-       aes(x = week_relative_intensity)) +
+ggplot(phase_complete,
+       aes(x = relative_intensity)) +
   geom_histogram(binwidth = 0.05) +
-  labs(title = "Weekly relative training intensity",
-       x = "Proportion of critical power")
+  labs(title = "Relative training intensity",
+       x = "Proportion of critical power") 
 
 ggsave(path = "plots", filename = "rel_int_dist.png")
 
 ```
 
 ```{r volume-by-quartile}
-ggplot(ride_metrics, aes(x = as.factor(cp_quantile), y = week_total_workout_time)) +
+ggplot(phase_complete, aes(x = as.factor(cp_quantile), y = workout_time)) +
   stat_halfeye(
     adjust = 0.5,
     width = 0.6,
@@ -467,9 +480,15 @@ ggplot(ride_metrics, aes(x = as.factor(cp_quantile), y = week_total_workout_time
     width = 0.25,
     outlier.shape = NA
   ) +
-  labs(title = "Weekly training volume",
+  labs(title = "Training volume",
        x = "Quartile",
        y = "Average minutes per week")
+
+
+ggplot(phase_complete, aes(x = workout_time, fill = as.factor(cp_quantile))) +
+  geom_density(alpha = 0.5) +
+  scale_colour_ggthemr_d() +
+  labs(fill = "CP Quantile")
 
 ggsave(path = "plots", filename = "vol_by_quartile.png")
 ```
@@ -492,16 +511,21 @@ ggplot(ride_metrics, aes(x = as.factor(cp_quantile), y = week_relative_intensity
     width = 0.25,
     outlier.shape = NA
   ) +
-  labs(title = "Weekly training intensity",
+  labs(title = "Training intensity",
        x = "Quartile",
        y = "Proportion of critical power")
+
+ggplot(phase_complete, aes(x = relative_intensity, fill = as.factor(cp_quantile))) +
+  geom_density(alpha = 0.5) +
+  scale_colour_ggthemr_d() +
+  labs(fill = "CP Quantile")
 
 ggsave(path = "plots", filename = "rel_int_by_quartile.png")
 ```
 
 
 ```{r total-tss-quartile}
-ggplot(ride_metrics, aes(x = as.factor(cp_quantile), y = week_total_tss)) +
+ggplot(phase_complete, aes(x = as.factor(cp_quantile), y = coggan_tss)) +
   stat_halfeye(
     adjust = 0.5,
     width = 0.6,
@@ -517,9 +541,14 @@ ggplot(ride_metrics, aes(x = as.factor(cp_quantile), y = week_total_tss)) +
     width = 0.25,
     outlier.shape = NA
   ) +
-  labs(title = "Weekly total training load",
+  labs(title = "Training Stress Score Per Phase",
        x = "Quartile",
        y = "Training Stress Score (AU)")
+
+ggplot(phase_complete, aes(x = coggan_tss, fill = as.factor(cp_quantile))) +
+  geom_density(alpha = 0.5) +
+  scale_colour_ggthemr_d() +
+  labs(fill = "CP Quantile")
 
 ggsave(path = "plots", filename = "total_tss_by_quartile.png")
 ```
@@ -531,12 +560,12 @@ library(gt)
 library(gtsummary)
 library(webshot)  # save gt table as png
 
-weekly_metrics_table <- ride_metrics %>%
-  select(gender, critical_power ,week_total_workout_time, week_total_work, mean_weekly_rides) %>%
+phase_metrics_table <- phase_complete %>%
+  select(gender, critical_power ,workout_time, total_work, rides_per_phase) %>%
   dplyr::rename("Critical Power (W)" = critical_power,
-                "Weekly volume (mins)" = week_total_workout_time,
-                "Work done per week (J)" = week_total_work,
-                "Rides per week" = mean_weekly_rides) %>%
+                "Phase volume (hours)" = workout_time,
+                "Work done per phase (kJ)" = total_work,
+                "Rides per phase" = rides_per_phase) %>%
   tbl_summary(
     by = gender,
     missing = "no",
@@ -544,15 +573,54 @@ weekly_metrics_table <- ride_metrics %>%
     digits = (all_continuous() ~ 1)) %>%
   as_gt %>%
   opt_align_table_header(align = "left") %>%
-  tab_header(title = "Table 1. Weekly training characteristics")
+  tab_header(title = "Table 1. Training characteristics")
 
-gtsave(weekly_metrics_table, filename = "weekly_training_metrics.png",path = "plots")
+gtsave(phase_metrics_table, filename = "phase_training_metrics.png",path = "plots")
                 
 ```
 
+##### Results section plots/tables
+
+```{r}
+phase_complete %>%
+  select(gender, critical_power ,workout_time, rides_per_phase,relative_intensity, w_prime) %>%
+  filter(gender == "M") %>%
+  dplyr::rename("Critical Power (W)" = critical_power,
+                "W'" = w_prime,
+                "Phase volume (hours)" = workout_time,
+                "Rides per phase" = rides_per_phase,
+                "Relative intensity" = relative_intensity) %>%
+  tbl_summary(missing = "no",
+    statistic = all_continuous() ~ "{mean} ({sd})",
+    digits = (all_continuous() ~ 1)) %>%
+  as_gt %>%
+  opt_align_table_header(align = "left") %>%
+  tab_header(title = "Table 1. Training characteristics")
+```
+
+```{r}
+cp_dist <- phase_complete %>%
+  filter(gender == "M") %>%
+  ggplot(aes(x = critical_power)) +
+  geom_histogram(binwidth = 10) +
+  geom_vline(xintercept = 210.9, linetype = "dashed", colour = "#045DCE") +
+  geom_vline(xintercept = 280.9, linetype = "dashed", colour = "#045DCE") +
+  geom_vline(xintercept = 246.1, colour = "black") +
+  labs(x = "Critical Power (W)",
+       y = "Count")
+
+ggsave(path = "plots", filename = "cp_dist_males.png")
+```
+
+```{r}
+summary(phase_complete)
+```
+
+
+
 ## Write to rds file
 ```{r}
-write_rds(x = ride_metrics,
+write_rds(x = phase_complete,
           file = "data/ride_metrics.rds")
 ```
 
