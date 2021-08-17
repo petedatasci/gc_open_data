@@ -17,6 +17,8 @@ knitr::opts_chunk$set(
 	cache = TRUE,
 	dpi = 180
 )
+
+
 ```
 
 
@@ -24,13 +26,18 @@ knitr::opts_chunk$set(
 library(ggthemr)
 library(tidyverse)
 library(tidymodels)
-library(readr)
-library(lme4)
 library(corrr)
 library(GGally)
-ggthemr("fresh")
 library(reshape2)
-
+library(kableExtra)
+library(datawizard)
+library(lmerTest)
+library(parameters)
+library(ggplot2)
+library(parameters)
+library(lme4)
+library(DataExplorer)
+ggthemr("fresh")
 ```
 
 # Read in data
@@ -39,31 +46,140 @@ library(reshape2)
 
 ```{r}
 rides <- read_rds("data/ride_metrics.rds") %>%
+  # keep males only
+  filter(gender == "M") %>%
   # drop proprietary variables
-  select(-week_total_tss,-week_coggan_if,-critical_power_error, -w_prime_error, -gender)
+  select(-coggan_tss,-coggan_if,-coggam_variability_index, -critical_power_error, -w_prime_error, -gender) %>%
+  mutate(cp_quantile = as.factor(cp_quantile),
+         id = as.factor(id))
+
+summary(rides)
 ```
 
-Proprietary variables are dropped because they are determined by another 'performance threshold' value that we have no visual of, nor do we know the value. Furthermore it's calculation differs from the `critica_power` variable I am using for this analysis.
+```{r}
+library(ggdist)
 
-# Principle Compomelted_cor <- melt(rides_cor)
+ggplot(rides, aes(x = as.factor(cp_quantile), y = workout_time)) +
+  stat_halfeye(
+    adjust = 0.5,
+    width = 0.6,
+    .width = 0,
+    justification = -0.3) +
+  geom_point(
+    size = 1.3,
+    alpha = 0.15,
+    position = position_jitter(
+      seed = 1, width = 0.1)
+  ) +
+  geom_boxplot(
+    width = 0.25,
+    outlier.shape = NA
+  ) +
+  labs(x = "Quartile",
+       y = "Average hours per phase")
 
-ggplot(data = melted_cor, aes(x=term, y = variable, fill = value)) +
-         geom_tile() +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))nent Analysis
+ggsave(filename = "quartile_hours_per_phase.png", path = "plots")
+```
+
+
+```{r}
+
+ggplot(rides,
+       aes(x = age, y = critical_power)) +
+  geom_point()
+
+```
+
+```{r}
+ggplot(rides, aes(x = as.factor(cp_quantile), y = relative_intensity)) +
+  stat_halfeye(
+    adjust = 0.5,
+    width = 0.6,
+    .width = 0,
+    justification = -0.3) +
+  geom_point(
+    size = 1.3,
+    alpha = 0.15,
+    position = position_jitter(
+      seed = 1, width = 0.1)
+  ) +
+  geom_boxplot(
+    width = 0.25,
+    outlier.shape = NA
+  ) +
+  labs(x = "Quartile",
+       y = "Relative intensity")
+
+ggsave(filename = "quartile_relative_intensity.png", path = "plots")
+```
+
+
+
+```{r}
+rides %>%
+  #group_by(cp_quantile) %>%
+  select(workout_time, rides_per_phase, total_work, relative_intensity, average_power, critical_power) %>%
+  summarise(across(.cols = everything(), list(mean = mean, sd = sd))) %>%
+  kbl() %>%
+  kable_styling()
+```
+
+# Explortatory Data Analysis
+
+### Plot intro
+
+```{r}
+df_description <- introduce(rides) %>%
+  kbl() %>%
+  kable_styling()
+```
+
+```{r}
+ggplot(rides, aes(x = age, y = workout_time)) +
+  geom_point() +
+  geom_col()
+```
+
+
+
+### Matrix of histograms
+
+```{r}
+rides %>%
+  select(critical_power,w_prime, age, coggan_np, average_speed, average_hr, workout_time, rides_per_phase, np_relative_intensity) %>%
+  melt() %>%
+  ggplot(aes(x = value)) +
+  geom_density() +
+  facet_wrap(~variable, scales = "free") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+ggsave(filename = "variable_density_matrix.png", path = "plots")
+```
+
+```{r}
+skewness(rides$workout_time)
+skewness(rides$rides_per_phase)
+```
+
+
+Proprietary variables are dropped because they are determined by another 'performance threshold' value that we have no visual of, nor do we know the value. Furthermore it's calculation differs from the `critical_power` variable I am using for this analysis.
 
 ### Correlation matrix
 
 ```{r corr-matrix}
 rides_cor <- rides %>%
   dplyr::select(where(is.numeric)) %>%
+  select(-relative_intensity, pwr_hr_ratio, -average_power) %>%
   correlate(use = "pairwise.complete.obs") %>%
   rearrange()
 
+rides_cor %>%
+  focus(critical_power) %>%
+  kbl() %>%
+  kable_styling()
 
-
-
-# rides %>%
-#   cor(y = critical_power, x = age, use = "everything", method = "pearson")
+rides %>%
+  cor(y = critical_power, x = age, use = "everything", method = "pearson")
 ```
 
 
@@ -71,29 +187,27 @@ rides_cor <- rides %>%
 melted_cor <- melt(rides_cor)
 
 ggplot(data = melted_cor, aes(x=term, y = variable, fill = value)) +
-         geom_tile() +
+  geom_tile() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+ggsave(filename = "cor_heatmap.png", path = "plots")
+
 ```
 
 
 Correlation matrix suggests that there are several key correlations to look at:
 
-* Week_total_work
-* Week_coggan_np
-* Week_relative_intensity
+* total_work
+* coggan_np
+* relative_intensity
+* total_work
+* workout_time
 
 Which can be broadly summarised as:
 * Those who cycle more have a higher cp
 * Those who hold a higher average/NP during sessions have a higher CP
 * Those who hold a relatively lower relative intensity have a higher critical power
 
-
-### Pairwise plot matrix
-```{r}
-# rides %>%
-#   select(gender, week_total_work,week_coggan_np, week_relative_intensity) %>%
-#   GGally::ggpairs(aes(colour = gender))
-```
 
 ### Principle component analysis
 
@@ -107,8 +221,12 @@ First, we’ll also use a few recipe steps to preprocess the data for PCA; namel
 
 
 ```{r pca-recipe}
+
+library(broom)
+options(na.action = "na.omit")
+
 pca_df <- rides %>%
-  select(-year,-training_phase)
+  select(-season,-training_phase)
 
 pca_recipe <-
   recipe(~., data = pca_df) %>%
@@ -173,12 +291,12 @@ pca_prep %>%
   ggplot() + 
   geom_line(aes(x = component, y = value)) +
   geom_point(aes(x = component, y = value)) +
-  geom_line(aes(x = component, y = cumsum(value))) +
-  geom_point(aes(x = component, y = cumsum(value))) +
-  scale_y_continuous(limits = c(0,100),
-                     breaks = seq(0,100, by = 10)) +
+  scale_y_continuous(limits = c(0,50),
+                     breaks = seq(0,50, by = 10)) +
   xlim(c(0, 10)) + 
   ylab("% of total variance")
+
+ggsave(filename = "pca_scree_plot.png", path = "plots")
 ```
 
 ### Plot PCA loadings
@@ -200,13 +318,14 @@ rides_pca %>%
   labs(x = NULL,
     y = "Relative importance in each principal component") +
   facet_wrap(~ component, ncol = 5) +
-  theme_minimal() +
+  theme_light() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),         
-        axis.ticks.x = element_blank())
+        axis.ticks.x = element_blank()) +
+  theme_light()
 
 ```
 
-Biggest difference in PC1 is `week_total_work`/ `week_total_distance` and `week_relative_intensity`. Training is not likely to have both, the more you train the easier it needs to be. 
+Biggest difference in PC1 is `week_total_work`/ `week_total_distance` and `week_relative_intensity`. Those who train more, do so at a lower intensity relative to their critical power. Whereas PC2 suggests that a high power output or higher relative intensity is met with lower training volume. Training is not likely to have both, the more you train the easier it needs to be. 
 
 Let's zoom into the first four components to better understand which training metrics contribute to positive and negative directions
 
@@ -253,14 +372,14 @@ pca_wider <- rides_pca  %>%
 # arrow_style <- arrow(length = unit(.05, "inches"),
 #                      type = "closed")
 
+ggthemr("fresh")
 
 pca_plot <-
   juice(pca_prep) %>%
-  ggplot(aes(PC1, PC2, colour = as.factor(cp_quantile), shape = gender)) +
+  ggplot(aes(PC1, PC2, colour = as.factor(cp_quantile))) +
   geom_point(alpha = 0.6, 
              size = 2) +
-  labs(colour = "CP Quantile",
-       shape = "Gender") +
+  labs(colour = "CP Quantile") +
   scale_colour_ggthemr_d()
 
 pca_plot
@@ -280,8 +399,8 @@ ggsave(filename = "pca_plot.png", path = "plots")
 ```
 
 The `pca_plot` shows:
-* quantiles 3 and 4 are to the left;
-* quantiles 1 and 2 are to the right.
+* quantiles 3 and 4 are to right;
+* quantiles 1 and 2 are to the left
 
 ### Plot variables highlighted by PCA
 Letsw view the relationship between critical power quantiles and training volume/intensity
@@ -289,9 +408,9 @@ Letsw view the relationship between critical power quantiles and training volume
 ```{r volume + intensity}
 # quartiles volume vs intensity
 ggplot(rides,
-       aes(x = week_total_workout_time, y = week_relative_intensity, shape = gender)) +
-         geom_point(aes(colour = as.factor(cp_quantile)),alpha = 0.5) +
-  geom_smooth(method = "lm", se = FALSE, aes(linetype = gender)) +
+       aes(x = week_total_workout_time, y = week_relative_intensity, colour = cp_quantile)) +
+         geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE) +
   scale_colour_ggthemr_d() +
   labs(colour = "CP Quantile")
 
@@ -299,9 +418,9 @@ ggsave(filename = "vol_vs_intens.png", path = "plots")
 
 # relative intensity vs critical power
 ggplot(rides,
-       aes(x = week_relative_intensity, y = critical_power, colour = gender)) +
+       aes(x = week_relative_intensity, y = critical_power)) +
          geom_point(alpha = 0.4) +
-  geom_smooth(method = "lm",aes(fill = gender)) +
+  geom_smooth(method = "lm") +
   scale_colour_ggthemr_d()
 
 ggsave(filename = "relintens_vs_cp.png", path = "plots")
@@ -315,22 +434,20 @@ The trends are more difficult to see when using average power or normalised powe
 library(cowplot)
 
 rel_intensity_his <- 
-  ggplot(rides, aes(x = week_relative_intensity, fill = as.factor(cp_quantile))) +
-         geom_histogram(alpha = 0.6) +
-         labs(x = "Relative exercise intensity",
-              y = "Frequency",
-              title = "Do better athletes train at a lower exericse intensity?") +
-  facet_wrap(~gender, scales = "free_y") +
+  ggplot(rides, aes(x = week_relative_intensity, fill = cp_quantile)) +
+  geom_histogram(alpha = 0.6) +
+  labs(x = "Relative exercise intensity",
+       y = "Frequency",
+       title = "Do better athletes train at a lower exericse intensity?") +
   theme(legend.position = "none")
 
 work_hist <-
-  ggplot(rides, aes(x = week_total_work, fill = as.factor(cp_quantile))) +
-         geom_histogram(alpha = 0.6) +
-         labs(x = "Work done per week (J)",
-              y = "Frequency",
-              title = "Do better athletes do more work per week?",
-              fill = "CP quantile") +
-  facet_wrap(~gender, scales = "free_y")
+  ggplot(rides, aes(x = week_total_work, fill = cp_quantile)) +
+  geom_histogram(alpha = 0.6) +
+  labs(x = "Work done per week (J)",
+       y = "Frequency",
+       title = "Do better athletes do more work per week?",
+       fill = "CP quantile")
 
 
 plot_grid(rel_intensity_his, work_hist, labels = c("A", "B"), label_size = 12)
@@ -371,12 +488,470 @@ ggplot(rides,
        aes(x = critical_power)) +
   geom_histogram(binwidth = 5)
 
-describe_distribution(pre_mm_df$critical_power)
+describe_distribution(rides$critical_power)
 
 citation("parameters")
 ```
 
 Critical power is normally distributed so it does not need any transformations.
+
+
+## Build a model - Non PCA Data
+
+It's good practice to standardise the explanatory variables so that they have a mean of zero ("centering") and a standard deviation of one ("scaling"). This ensures that the estimated coefficients are all on the same scale, making it easier to compare effect sizes.
+
+
+##### Train and testing data
+
+
+```{r train-and-test}
+
+rides_scaled <- rides %>%
+  mutate_at(vars("workout_time":"w_prime"), scale)
+
+model_df <- center(rides_scaled) %>%
+  na.omit()
+
+
+set.seed(2021)
+
+model_df_split <- initial_split(model_df, prop = 0.8, strata = cp_quantile)
+mixed_model_train <- training(model_df_split)
+mixed_model_test <- testing(model_df_split)
+
+
+
+```
+
+
+
+
+##### Create the mixed model - backwards stepwise regression
+
+**Run model with optimiser**
+
+```{r}
+library(easystats)
+install.packages("easystats")
+
+mixed_lmer <- lmerTest::lmer(critical_power ~ workout_time + total_distance + elevation_gain + total_work + rides_per_phase + average_hr + coggan_np + np_hr_ratio + np_relative_intensity + (1|season) + (1|id), data = mixed_model_train, REML = FALSE, control = lmerControl(optimizer = "bobyqa"))
+
+plot(check_collinearity(mixed_lmer))
+
+lmer_colin <- check_collinearity(mixed_lmer)
+
+```
+
+The full model shows that there are several variables with a VIF > 10. For a given predictor (p), multicollinearity can assessed by computing a score called the variance inflation factor (or VIF), which measures how much the variance of a regression coefficient is inflated due to multicollinearity in the model. The smallest possible value of VIF is one (absence of multicollinearity). As a rule of thumb, a VIF value that exceeds 5 or 10 indicates a problematic amount of collinearity (James et al. 2014).
+
+The plot above shows that `total_distance` and `total_work` have high VIF factors, which implies that the information that this variable provides about the response is redundant in the presence of the other variables (James et al. 2014,P. Bruce and Bruce (2017)). The VIF values will change after the removal of each variable, so variables will be removed one at a time and VIF values re-evaluated.
+
+
+```{r}
+mixed_lmer2 <- lmerTest::lmer(critical_power ~ workout_time + elevation_gain + total_work + rides_per_phase + average_hr + coggan_np + np_hr_ratio + np_relative_intensity + (1|season) + (1|id), data = mixed_model_train, REML = FALSE, control = lmerControl(optimizer = "bobyqa"))
+
+options(scipen = 999)  # turn off scientific notation
+
+check_collinearity(mixed_lmer2)
+
+
+mixed_lmer3 <- lmerTest::lmer(critical_power ~ workout_time + elevation_gain + rides_per_phase + average_hr + coggan_np + np_hr_ratio + np_relative_intensity + (1|season) + (1|id), data = mixed_model_train, REML = FALSE, control = lmerControl(optimizer = "bobyqa"))
+
+summary(mixed_lmer3)
+
+check_collinearity(mixed_lmer3)
+
+
+```
+
+
+
+**Model collinearity**
+
+```{r}
+library(kableExtra)
+step_model_mc <- check_collinearity(step_model)
+
+ggplot(lmer_colin, aes(x = Term, y = VIF)) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),         
+        axis.ticks.x = element_blank()) +
+  geom_hline(yintercept = 10, colour = "red", linetype = "dashed") +
+  geom_hline(yintercept = 5, colour = "red", linetype = "dashed")
+
+
+check_singularity(lmer_final)
+```
+
+
+After removing `total_distance` and then re-fitting the full model, `total_work` was then removed with a VIF of 11.24. After this was done, all variables had VIF values < 10.
+
+
+Quickly looking at the summary output suggests that elevation gain could be removed from the model and season may also be removed as it explains such a small amount of variance in critical power values.
+
+*The random effects part tells you how much variance you find among levels of your grouping factor(s), plus residual variance*.
+
+*The fixed effect part is very similar to a linear model output: intercept & error, slope estimate & error*.
+
+The output provides estimates for the random effects in the form of variances and standard deviations. We can see that the variance in id is 0.011, and is significantly less the std deviation (0.11).
+
+We can look at how much user ID explains the variance in critical power by taking the variance for `id` and dividing it by the total variance:
+
+```{r}
+0.01184 + 0.00000 + 0.02385  # = 0.03569
+
+0.01184/0.2385
+
+
+
+```
+
+Once we account for year and user id, there are still MANY statistically significant predictors of critical power. But when looking at the estimate values, it appears to be that `coggan_np` and `week_relative_intensity` look to be important.
+
+Because this is a non-nested design we will need to use the maximum likelihoods methods when comparing models that differ in their fixed effects.
+
+**Backwards elimination**
+
+```{r}
+# remove.packages("lmerTest")
+
+# backward elimination
+lmer_step <- lmerTest::step(mixed_lmer3)
+
+# show eliminated variables
+lmer_step  # 2 ages and week_total_elevation eliminated
+
+# extract model
+step_model <- lmerTest::get_model(lmer_step)
+
+# show model
+summary(step_model)
+
+ggplot(rides, aes(x = rides_per_phase, y = critical_power)) +
+  geom_point()
+
+```
+
+#### Model using BIC
+
+In this process we will:
+
+1. use `dredge()` to determine which linear model best predicts critical power (using AIC as the criterion). `dredge()` carries out an automated model search using subsets of the ‘global’ model provided. Ignore interactions for this exercise. 
+
+2. Determine how many variables are included in the 'best' model.
+
+3. Count the number of models in total having an AIC difference less than or equal to 7. This is one way to decide which models have some support and remain under consideration. For AIC basic principles, see here: https://www.r-bloggers.com/2018/04/how-do-i-interpret-the-aic/
+
+4. Another way to determine the set of models that have support is to use AIC weights. Calculate the Akaike weights of all the models from your dredge() analysis. How much weight is given to the best model**? Are there common features shared among the models having the highest weights?
+
+5. How many models are in the “confidence set” whose cumulative weights reach 0.95***?
+
+6. Use a linear model to fit the “best” model to the data. Produce a summary of the results. Use visreg() to visualize the conditional relationship between bird abundance and each of the three variables in the “best” model one at a time. Visually, which variable seems to have the strongest relationship with bird abundance in the model?
+
+7. Generate an ANOVA table for the best model. Use Type 2 or Type 3 sums of squares so that the order of entry of the main effects in the formula don’t affect the tests (there are no interactions). Why should we view the resulting P-values with a great deal of skepticism****?
+
+```{r}
+install.packages("lmerTest")
+library(lmerTest)
+drop1(mixed_lmer3, test = "F")
+```
+
+
+```{r dredge-model}
+library(MuMIn)
+options(na.action = "na.fail")
+# 
+# # 1. use dredge to find the best model
+
+model_dredge_aic <- dredge(mixed_lmer3, rank = "AIC")
+model_dredge_bic <- dredge(mixed_lmer3, rank = "BIC")
+```
+
+##### aic selection
+```{r}
+install.packages("AICcmodavg")
+library(AICcmodavg)
+
+# models with delta AIC <=6 (Harrison et al., 2018)
+
+sum(model_dredge$delta <= 2)  # 3 models highlighted
+
+# calculate AIC weights - another way determine which models have support
+
+weights <- Weights(model_dredge_aic)
+
+weights
+# models in the 95% confidence set
+
+length(cumsum(weights)[cumsum(weights)< 0.95]) + 1
+
+# extract best models
+cand_models <- get.models(model_dredge_aic, subset = delta <=2)
+
+# compare candidate models
+model_names <- c("d1", "d2", "d3", "d4")
+
+dredge_compare <- aictab(cand_models, modnames = model_names, second.ord = TRUE, sort = TRUE)
+
+dredge_compare %>%
+  kbl() %>%
+  kable_styling()
+
+ggsave(filename = "compare_dredge_models.png", path = "plots")
+
+d1 <- get.models(model_dredge,1)[[1]]
+d1_fit <- lmerTest::lmer(d1, data = mixed_model_train, REML = FALSE,
+                         control = lmerControl(optimizer = "bobyqa"))
+
+summary(d1)
+
+d2 <- get.models(model_dredge,2)[[1]]
+summary(d2)
+
+d3 <- get.models(model_dredge,3)[[1]]
+
+summary(d3)
+
+compare_models(cand_models)
+
+
+summary(d1_fit)
+
+options(na.action = "na.omit")
+
+```
+
+##### bic selection
+
+```{r}
+
+sum(model_dredge_bic$delta <= 7)
+weights <- Weights(model_dredge_bic)
+
+weights
+
+cand_model_bic <- get.models(model_dredge_bic, subset = delta <=7)
+
+model_names_bic <- c("d1")
+
+dredge_compare_bic <- bictab(cand_model_bic, modnames = model_names_bic, second.ord = TRUE, sort = TRUE)
+
+dredge_compare_bic %>%
+  kbl() %>%
+  kable_styling()
+
+d1_bic <- get.models(model_dredge_bic,1)[[1]]
+
+d1_bic_train_fit <- lmerTest::lmer(d1_bic, data = mixed_model_train, REML = FALSE,
+                         control = lmerControl(optimizer = "bobyqa"))
+
+summary(d1_bic)
+
+
+```
+
+**Report model**
+
+```{r}
+tidy_d1_output <- broom.mixed::tidy(d1_fit)
+
+tidy_d1_output %>%
+  kbl() %>%
+  kable_styling()
+
+
+```
+
+**Model performance**
+
+```{r model-check}
+library(performance)
+library(patchwork)
+
+check_model(d1_fit)
+ggsave(filename = "step_model_check", path = "plots")
+
+
+```
+
+Looking at the model performance and assumptions, the charts suggest that the model is 'pulled out' of linearity by some extreme values. This is to be expected as this is a relatively large dataset and in the sport of cycling you are likely to have users on both ends of the spectrum, both 'poor performers' and 'very high' performers. However, normality of residuals follows the normal distribution and normality.
+
+
+**Model Performance**
+
+
+```{r model-performance}
+
+model_performance(d1) %>%
+  kbl(caption = "Mixed model performance") %>%
+  kable_styling()
+
+model_performance(d1_bic) %>%
+  kbl(caption = "Mixed model performance") %>%
+  kable_styling()
+```
+
+There are several variables we can use to evaluate these models:
+* R2_conditional: takes into account both fixed and random effects
+* R2_marginal: takes into account only fixed effects
+* AIC: is a measure of how well the model will predict new data, a lower values means it will likely have better predictive power. A difference > 10 suggests that the models are very different.
+* Performance_score: proprietry varaible included by the `performance` package. This score ranges from 0% to 100%. Calculation is based on normalizing all indices (i.e. rescaling them to a range from 0 to 1), and taking the mean value of all indices for each model. This is a rather quick heuristic, but might be helpful as exploratory index.
+
+
+##### Run model on test set
+
+Remove `average_power` due to it's high VIF value and also `average_speed`, `average_cadence`, `workout_time`, `rides_per_phase` `total_distance` and `age`.
+
+```{r create-test-model}
+test_lmer <- lmerTest::lmer(d1_bic, data = mixed_model_test, REML = FALSE,
+                         control = lmerControl(optimizer = "bobyqa"))
+
+
+summary(test_lmer)
+
+model_performance(test_lmer) %>%
+  kbl(caption = "Mixed model performance") %>%
+  kable_styling()
+```
+
+**check model**
+
+```{r}
+check_model(test_lmer)
+ggsave(filename = "test_model_check", path = "plots")
+```
+
+
+**report model**
+
+```{r}
+library(report)
+report(test_lmer)
+
+model_performance(test_lmer)
+
+Weights(test_lmer)
+
+install.packages("sjPlot")
+library(sjPlot)
+tab_model(test_lmer)
+
+ggsave(filename = "test_model_check", path = "plots")
+
+
+```
+
+```{r}
+test_output_tidy <- broom::tidy(test_lmer)
+
+test_output_tbl <- test_output_tidy %>%
+  kbl() %>%
+  kable_styling()
+
+check_model(test_lmer)
+ggsave(filename = "test_model_assumptions_check", path = "plots")
+
+
+test_output_tbl
+```
+
+
+
+
+## UNUSED CODE
+
+```{r test-model-performance}
+check_model(test_lmer)
+
+model_performance(test_lmer) %>%
+  select(-BIC) %>%
+  kbl(caption = "Mixed model performance") %>%
+  kable_styling()
+```
+
+
+##### Visualise predictors and outcomes
+
+```{r}
+# visualise relationship between predictors and outcomes
+library(visreg)
+
+visreg(test_lmer, xvar = "rides_per_phase")
+visreg_np <- visreg(test_lmer, xvar = "coggan_np")
+visreg_ri <- visreg(test_lmer, xvar = "np_relative_intensity")
+visreg_time <- visreg(test_lmer, xvar = "workout_time")
+
+gridExtra::grid.arrange(visreg_np, visreg_ri, visreg_time, nrow = 2)
+
+# 7. ANOVA
+
+anova(lmer_final, type = 3)
+```
+
+
+
+
+
+
+
+
+
+
+
+# Unused code
+
+```{r create-model-df}
+
+library(afex)
+
+# model_df <- rides %>%
+#   select(-total_distance, -total_work, average_power) %>%
+#   # make id a factor variable
+#   group_by(id) %>%
+#   mutate(id = as.factor(id)) %>%
+#   ungroup() %>%
+#   # scale variables
+#   mutate_at(vars("week_total_workout_time":"w_prime"), scale)
+```
+
+
+**Check whether a significant effect for year exists**
+
+Although we're not interesting in it as a predictor, if there is a significant effect we want to account for it as a random effect in our model.
+
+
+```{r}
+# library(beeswarm)
+# 
+# lm_year <- lm(critical_power ~ year, data = model_df)
+# 
+# anova(lm_year)
+```
+
+Yes, there is a statistically significant effect of year.
+
+
+
+```{r split-data}
+
+# library(caret)
+# # Set the random number stream using `set.seed()` so that the results can be 
+# # reproduced later. 
+# 
+# set.seed(123)
+# 
+# # Save the split information for an 80/20 split of the data
+# 
+# # creating indices
+# trainIndex <- createDataPartition(model_df$critical_power,p=0.80,list=FALSE)
+# 
+# #splitting data into training/testing data using the trainIndex object
+# model_train <- model_df[trainIndex,] #training data (80% of data)
+#  
+# model_test <- model_df[-trainIndex,] #testing data (20% of data)
+
+
+```
 
 ### Variable collinearity
 
@@ -392,9 +967,9 @@ Zuur, AF, Ieno, EN, Walker, N, Saveliev, AA, and Smith, GM. Springer.
 corvif <- function(dataz) {
   dataz <- as.data.frame(dataz)
   #correlation part
-  #cat("Correlations of the variables\n\n")
-  #tmp_cor <- cor(dataz,use="complete.obs")
-  #print(tmp_cor)
+  cat("Correlations of the variables\n\n")
+  tmp_cor <- cor(dataz,use="complete.obs")
+  print(tmp_cor)
   
   #vif part
   form    <- formula(paste("fooy ~ ",paste(strsplit(names(dataz)," "),collapse=" + ")))
@@ -449,7 +1024,7 @@ myvif <- function(mod) {
 # Run corvif on rides
 
 rides_vif <- rides %>%
-  select(-id, -cp_quantile,-critical_power)
+  select(-id, -cp_quantile,-critical_power, -training_phase, -year)
 
 # corvif output
 ride_corvif <- corvif(rides_vif)
@@ -458,6 +1033,9 @@ ride_corvif <- corvif(rides_vif)
 corvif_res <- ride_corvif %>%
   as.data.frame() %>%
   rownames_to_column()
+
+
+
   
 ```
 
@@ -481,289 +1059,91 @@ ggsave(path = "plots", filename = "rides_vif.png")
 
 ```
 
-I need to remove the variables that have VIF values > 10 as they have high collinearity and i also need to provide numeric user ID so that `id` is a factor for the mixed model.
+Non-numeric variables needed to be removed:
+* `year`, `id`, `training_phase` and `cp_quantile`.
 
-I also need to remove W' and cp_quantile from the model data set they are both functions of the outcome variable (`critical_power`).
+I need to remove the variables that have VIF values > 10 as they have high collinearity and I also need to provide numeric user ID so that `id` is a factor for the mixed model.
 
-## Build a model - Non PCA Data
-
-It's good practice to standardise the explanatory variables so that they have a mean of zero ("centering") and a standard deviation of one ("scaling"). This ensures that the estimated coefficients are all on the same scale, making it easier to compare effect sizes.
-
-```{r create-model-df}
-
-library(afex)
-
-model_df <- rides %>%
-  select(-week_total_distance, -week_total_work, -week_average_power, -w_prime, -cp_quantile) %>%
-  # make id a factor variable
-  group_by(id) %>%
-  mutate(id = as.factor(id)) %>%
-  ungroup() %>%
-  # recode gender as numeric factor for modelling
-  mutate(gender = fct_recode(gender, "0" = "M",
-                             "1" = "F"),
-         gender = as.factor(gender)) %>%
-  # scale variables
-  mutate_at(vars("week_total_workout_time":"rides_per_training_phase"), scale)
-```
-
-
-**Check whether a significant effect for year exists**
-
-Although we're not interesting in it as a predictor, if there is a significant effect we want to account for it as a random effect in our model.
 
 
 ```{r}
-library(beeswarm)
 
-lm_year <- lm(critical_power ~ year, data = model_df)
-
-anova(lm_year)
-```
-
-Yes, there is a statistically significant effect of year.
-
-##### Train and testing data
-```{r split-data}
-
-library(caret)
-# Set the random number stream using `set.seed()` so that the results can be 
-# reproduced later. 
-
-set.seed(123)
-
-# Save the split information for an 80/20 split of the data
-
-# creating indices
-trainIndex <- createDataPartition(model_df$critical_power,p=0.80,list=FALSE)
-
-#splitting data into training/testing data using the trainIndex object
-model_train <- model_df[trainIndex,] #training data (80% of data)
- 
-model_test <- model_df[-trainIndex,] #testing data (20% of data)
-
-# model_df_split <- initial_split(model_df, prop = 0.8)
-```
-
-
-```{r train-test-sets}
-# mixed_model_train <- training(model_df_split)
-# mixed_model_test <- testing(model_df_split)
-```
-
-
-##### Create the mixed model - backwards stepwise regression
-
-**Run model**
-```{r}
-mixed_lmer <- lmer(critical_power ~ . -year -id + (1|year) + (1|id), data = model_train)
-```
-
-This model converged, but let's see if we can use an optimiser.
-
-**Search for optimiser package**
-```{r}
-all_fit(mixed_lmer)
-```
-
-**Re-run model with optimiser**
-
-```{r}
-
-mixed_lmer <- lmerTest::lmer(critical_power ~ week_total_elevation_gain + week_average_speed + week_average_cad + week_coggam_variability_index + week_pwr_hr_ratio + age + week_total_workout_time + mean_weekly_rides + week_average_hr + week_coggan_np + week_relative_intensity + rides_per_training_phase + (1|year) + (1|id), data = model_train, REML = FALSE)
-
-
-options(scipen = 999)  # turn off scientific notation
-
-
-summary(mixed_lmer)
-```
-
-*The random effects part tells you how much variance you find among levels of your grouping factor(s), plus residual variance*.
-
-*The fixed effect part is very similar to a linear model output: intercept & error, slope estimate & error*.
-
-We can see that the variance in id is 173, and is significantly greater than the std deviation (13.2) which means that user id is very important and explains a lot of the variance in critical power, and could be related to a variety of things not captured in the data:
-* training history
-* genetics
-* location
-* performance level
-
-We can look at how much user ID explains the variance in critical power by taking the variance for `id` and dividing it by the total variance:
-
-```{r}
-173.1/(173.1 + 6.59 + 173.3)
-
-```
-
-So the differences between `id` explains ~ 49% of the variance that's 'left over' *after* the variance explain by our fixed effects.
-
-Once we account for year and user id, there are still MANY statistically significant predictors of critical power. But when looking at the estimate values, it appears to be that `coggan_np` and `week_relative_intensity` look to be important.
-
-Because this is a non-nested design we will need to use the maximum likelihoods methods when comparing models that differ in their fixed effects.
-
-```{r}
-remove.packages("lmerTest")
-
-# backward elimination
-lmer_step <- lmerTest::step(mixed_lmer)
-
-# show eliminated variables
-lmer_step  # 2 ages and week_total_elevation eliminated
-
-# extract model
-lmer_final <- lmerTest::get_model(lmer_step)
-
-# show model
-summary(lmer_final)
-
-# step_lmer <- stats::step(mixed_lmer)
+# best_models <- list(lmer_final, dredge_model)
 # 
-# step_lmer
+# model_names <- c("step", "dredge")
+# 
+# model_compare <- AICcmodavg::aictab(best_models, modnames = model_names)
+# 
+# model_compare %>%
+#   kbl() %>%
+#   kable_styling()
+# 
+# 
+# r_sq_step <- r.squaredGLMM(lmer_final)
+# r_sq_dred <- r.squaredGLMM(dredge_model)
+# 
+# 
+# model_comparison_r2 <- rbind(r_sq_step, r_sq_dred)
+# 
+# model_comparison_r2 <- cbind(model_compare, model_comparison_r2)
+# 
+# model_comparison_r2 %>%
+#   kbl() %>%
+#   kable_styling()
+# 
+# 
+# 
+# compare_performance(lmer_final, dredge_model) 
 
 ```
-
-
-##### Using `dredge()` to determine the best model
-
-https://www.zoology.ubc.ca/~bio501/R/workshops/modelselection.html
-
-In this process we will:
-
-1. use `dredge()` to determine which linear model best predicts critical power (using AIC as the criterion). `dredge()` carries out an automated model search using subsets of the ‘global’ model provided. Ignore interactions for this exercise. 
-
-2. Determine how many variables are included in the 'best' model.
-
-3. Count the number of models in total having an AIC difference less than or equal to 7. This is one way to decide which models have some support and remain under consideration. For AIC basic principles, see here: https://www.r-bloggers.com/2018/04/how-do-i-interpret-the-aic/
-
-4. Another way to determine the set of models that have support is to use AIC weights. Calculate the Akaike weights of all the models from your dredge() analysis. How much weight is given to the best model**? Are there common features shared among the models having the highest weights?
-
-5. How many models are in the “confidence set” whose cumulative weights reach 0.95***?
-
-6. Use a linear model to fit the “best” model to the data. Produce a summary of the results. Use visreg() to visualize the conditional relationship between bird abundance and each of the three variables in the “best” model one at a time. Visually, which variable seems to have the strongest relationship with bird abundance in the model?
-
-7. Generate an ANOVA table for the best model. Use Type 2 or Type 3 sums of squares so that the order of entry of the main effects in the formula don’t affect the tests (there are no interactions). Why should we view the resulting P-values with a great deal of skepticism****?
-
 
 ```{r}
-library(MuMIn)
-library(kableExtra)
-
-options(na.action = "na.fail")
-
-# 1. use dredge to find the best model
-
-model_dredge <- dredge(mixed_lmer)
-
-# 3. models with delta AICc < 7
-sum(model_dredge$delta < 10)
-
-# 4. calculate AIC weights - another way to determine which models have support
-w <- Weights(model_dredge)
-
-w
-
-# 5. models in the 95% "confidence set"
-
-length(cumsum(w)[cumsum(w)< 0.95]) + 1
-
-
-# 6. extract best models
-
-## models with delta less than 4 and fitted with ML
-cand_models <- get.models(model_dredge, subset = delta <4)
-
-# 7. compare candidate models cand_models 
-
-model_names <- c("d1","d2","d3")
-
-model_compare <- AICcmodavg::aictab(cand_models, modnames = model_names)
-
-model_compare %>%
-  kbl() %>%
-  kable_styling()
-
-
-#8. extract d1 model and re-fit
-dredge_model <- get.models(model_dredge, 1)[[1]]
-
-dredge_fit <- lmerTest::lmer(best_model, data = model_train, REML = FALSE,
-          control = lmerControl(optimizer = "bobyqa"))
-
-summary(best_fit)
-
-options(na.action = "na.omit")
-
-```
-
-
-##### Compare DIC from `dredge()` and `lmerTest::step()`
-
-AIC stands for Akaike Information Criterion:
-
-* AIC estimates the quality of a model in comparison to other models and thus can be used for model selection.
-* It works by evaluating the model's fit on the training data and adding a penalty term for the complexity of the model.
-
-*Compare and select best model from `dredge()`
-
-```{r}
-
-best_models <- list(lmer_final, dredge_model)
-
-model_names <- c("step", "dredge")
-
-all_model_compare <- AICcmodavg::aictab(best_models, modnames = model_names)
-
-all_model_compare %>%
-  kbl() %>%
-  kable_styling()
-
-
-r_sq_step <- r.squaredGLMM(lmer_final)
-r_sq_dred <- r.squaredGLMM(best_model)
-
-
-model_comparison <- rbind(r_sq_step, r_sq_dred)
-
-model_comparison <- cbind(all_model_compare, model_comparison)
-
-model_comparison %>%
-  kbl() %>%
-  kable_styling()
+# library(MuMIn)
+# library(kableExtra)
+# 
+# options(na.action = "na.fail")
+# 
+# # 1. use dredge to find the best model
+# 
+# model_dredge <- dredge(mixed_lmer)
+# 
+# # 3. models with delta AICc < 7
+# sum(model_dredge$delta < 10)
+# 
+# # 4. calculate AIC weights - another way to determine which models have support
+# w <- Weights(model_dredge)
+# 
+# w
+# 
+# # 5. models in the 95% "confidence set"
+# 
+# length(cumsum(w)[cumsum(w)< 0.95]) + 1
+# 
+# 
+# # 6. extract best models
+# 
+# ## models with delta less than 4 and fitted with ML
+# cand_models <- get.models(model_dredge, subset = delta <10)
+# 
+# # 7. compare candidate models cand_models 
+# 
+# model_names <- c("d1","d2", "d3", "d4")
+# 
+# model_compare <- AICcmodavg::aictab(cand_models, modnames = model_names)
+# 
+# model_compare %>%
+#   kbl() %>%
+#   kable_styling()
+# 
+# 
+# #8. extract d1 model and re-fit
+# dredge_model <- get.models(model_dredge, 1)[[1]]
+# 
+# dredge_fit <- lmerTest::lmer(dredge_model, data = model_train, REML = FALSE,
+#           control = lmerControl(optimizer = "bobyqa"))
+# 
+# summary(best_fit)
+# 
+# options(na.action = "na.omit")
 
 ```
-
-
-
-
-```{r}
-# visualise relationship between predictors and outcomes
-library(visreg)
-
-visreg(z, xvar = "rides_per_training_phase")
-visreg(z, xvar = "week_coggan_np")
-visreg(z, xvar = "week_total_workout_time")
-
-# 7. ANOVA
-
-anova(z, type = 3)
-```
-
-##### Reporting
-
-```{r}
-install.packages("easystats", repos = "https://easystats.r-universe.dev")
-
-remove.packages("tidymodels")
-
-remotes::install_github("easystats/parameters")
-library(parameters)
-library(easystats)
-library(report)
-
-
-
-easystats::r
-
-```
-
